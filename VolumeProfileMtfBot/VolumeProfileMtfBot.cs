@@ -137,6 +137,14 @@ namespace cAlgo.Robots
 
         private int _consecutiveLosses;
 
+        // Un "round" = les deux jambes (TP1 + TP2) ouvertes pour un meme signal.
+        // Les pertes consecutives sont evaluees une fois par round (PnL combine des
+        // deux jambes), pas par jambe individuelle, pour ne pas compter une seule
+        // sortie sur stop loss (qui ferme generalement TP1 et TP2 ensemble) comme
+        // deux pertes distinctes.
+        private int _openLegsInRound;
+        private double _roundNetProfit;
+
         protected override void OnStart()
         {
             _rsi = Indicators.RelativeStrengthIndex(Bars.ClosePrices, RsiPeriod);
@@ -266,10 +274,26 @@ namespace cAlgo.Robots
             var tp2Result = ExecuteMarketOrder(tradeType, SymbolName, remainderVolume, Label + Tp2Suffix, stopLossPips, tp2Pips, reason + " (TP2)");
 
             if (tp1Result.IsSuccessful && tp2Result.IsSuccessful)
+            {
+                _openLegsInRound = 2;
+                _roundNetProfit = 0;
+
                 Print("{0} entree remplie ({1}). Volume total: {2}, SL: {3} pips, TP1: {4} pips, TP2: {5} pips",
                     tradeType, reason, totalVolume, Math.Round(stopLossPips, 1), Math.Round(tp1Pips, 1), Math.Round(tp2Pips, 1));
+            }
             else
+            {
                 Print("Echec d'entree - TP1: {0}, TP2: {1}", tp1Result.Error, tp2Result.Error);
+
+                // Si une seule des deux jambes a pu s'ouvrir, on la referme aussitot
+                // pour eviter une position orpheline (taille reduite, non geree par
+                // le suivi de round / break-even qui attend les deux jambes).
+                if (tp1Result.IsSuccessful && tp1Result.Position != null)
+                    ClosePosition(tp1Result.Position);
+
+                if (tp2Result.IsSuccessful && tp2Result.Position != null)
+                    ClosePosition(tp2Result.Position);
+            }
         }
 
         private long CalculatePositionVolume()
@@ -303,10 +327,25 @@ namespace cAlgo.Robots
             if (!isTp1 && !isTp2)
                 return;
 
-            if (position.NetProfit < 0)
-                _consecutiveLosses++;
-            else
-                _consecutiveLosses = 0;
+            // _openLegsInRound == 0 ici signifie que cette position n'appartient pas
+            // a un round correctement ouvert (ex: jambe orpheline refermee juste
+            // apres un echec partiel dans TryEnter) : on l'ignore pour le suivi des
+            // pertes consecutives et le break-even.
+            if (_openLegsInRound <= 0)
+                return;
+
+            _roundNetProfit += position.NetProfit;
+            _openLegsInRound--;
+
+            if (_openLegsInRound <= 0)
+            {
+                if (_roundNetProfit < 0)
+                    _consecutiveLosses++;
+                else
+                    _consecutiveLosses = 0;
+
+                _roundNetProfit = 0;
+            }
 
             if (isTp1 && UseBreakEven && position.NetProfit > 0)
             {
@@ -348,6 +387,10 @@ namespace cAlgo.Robots
 
             var sessOk = (UseLondonSession && inLondon) || (UseNySession && inNy);
 
+            // Fenetres a eviter (reprises telles quelles du script Pine d'origine) :
+            // 08h00-08h30 UTC (ouverture Londres) et 13h30-14h00 UTC (fenetre
+            // habituelle des publications macro US type NFP/CPI, 8h30 ET) - pas
+            // 13h00 UTC (ouverture NY), qui n'a volontairement pas de fenetre dediee.
             var minuteOfDay = hour * 60 + barTimeUtc.Minute;
             var openAvoid = AvoidSessionOpen &&
                 ((minuteOfDay >= 480 && minuteOfDay < 510) ||
