@@ -25,8 +25,8 @@ La logique de signal (zones VAL/POC/VAH, bougie directionnelle, filtre de volume
 
 ## Stratégie
 
-- **Profil de volume** : calculé sur les N dernières bougies (`Barres`, 78 par défaut ≈ une session en 5 min), avec POC (Point of Control), VAH (Value Area High) et VAL (Value Area Low) sur une Value Area à 70% par défaut
-- **Filtres multi-timeframe** : tendance haussière/baissière déterminée par EMA20 vs EMA50 sur un timeframe intermédiaire (15 min par défaut) et un timeframe haut (1H par défaut)
+- **Profil de volume** : calculé sur les N dernières bougies (`Barres`, 26 par défaut ≈ une session de 6h30 en 15 min, même durée visée que les 78 barres du script Pine d'origine en 5 min), avec POC (Point of Control), VAH (Value Area High) et VAL (Value Area Low) sur une Value Area à 70% par défaut
+- **Filtres multi-timeframe** : tendance haussière/baissière déterminée par EMA20 vs EMA50 sur un timeframe intermédiaire (1H par défaut) et un timeframe haut (4H par défaut)
 - **Signaux d'entrée** (5 conditions réunies) :
   - Niveau VP touché (rebond sur VAL/POC, ou cassure de VAH) selon le sens
   - Bougie directionnelle (corps > mèche opposée)
@@ -52,7 +52,7 @@ Tous ces paramètres sont réglables dans l'interface cTrader (onglet Parameters
 3. Cliquez sur **Add** → **New cBot**
 4. Copiez le contenu de [`VolumeProfileMtfBot.cs`](VolumeProfileMtfBot.cs) dans l'éditeur de code intégré
 5. Cliquez sur **Build** (le bouton marteau) — ça doit compiler sans erreur
-6. Glissez le cBot sur un graphique **5 min** (timeframe principal attendu par la stratégie), réglez les paramètres
+6. Glissez le cBot sur un graphique **15 min** (timeframe principal attendu par la stratégie), réglez les paramètres
 7. Lancez d'abord en mode **backtest**, puis en **compte démo**
 
 ## Workflow avec Git / GitHub
@@ -63,15 +63,15 @@ Même principe que pour GoldTrendBot : ce dépôt reste la source de vérité ve
 
 | Paramètre | Défaut | Rôle |
 |---|---|---|
-| Barres (fenêtre du profil) | 78 | Nombre de bougies utilisées pour calculer le profil de volume |
+| Barres (fenêtre du profil) | 26 | Nombre de bougies utilisées pour calculer le profil de volume |
 | Lignes (Row Size) | 24 | Résolution du profil (nombre de niveaux de prix) |
 | Value Area % | 70 | % du volume total inclus dans VAH/VAL |
-| HTF1 / HTF2 | 15 min / 1H | Timeframes des filtres de tendance |
+| HTF1 / HTF2 | 1H / 4H | Timeframes des filtres de tendance |
 | Tolérance zone (%) | 0.15 | Distance max au niveau VP pour considérer "proche" |
 | Multiplicateur volume min | 1.2 | Volume requis vs sa moyenne pour valider un signal |
 | RSI Overbought / Oversold | 65 / 35 | Bornes RSI empêchant un signal à contre-sens |
 | Taille position (% equity) | 10 | Notionnel engagé par trade |
-| Stop Loss / TP1 / TP2 (%) | 0.4 / 0.4 / 0.8 | Distances de sortie en % du prix |
+| Stop Loss / TP1 / TP2 (%) | 0.6 / 0.6 / 1.2 | Distances de sortie en % du prix (x1.5 vs les défauts 5 min d'origine, ratio 1:1:2 conservé — a réaffiner par backtest) |
 | Break-even après TP1 | true | Sécurise la position restante une fois TP1 atteint |
 | Max pertes consécutives | 3 | Nombre de pertes d'affilée avant mise en pause du robot |
 | Perte journalière max (%) | 5.0 | Coupe-circuit : suspend les entrées pour le reste de la journée (UTC) si dépassé |
