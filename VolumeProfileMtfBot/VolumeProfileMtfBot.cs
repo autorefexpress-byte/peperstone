@@ -1,0 +1,507 @@
+using System;
+using cAlgo.API;
+using cAlgo.API.Indicators;
+using cAlgo.API.Internals;
+
+namespace cAlgo.Robots
+{
+    // ============================================================================
+    // VolumeProfileMtfBot
+    // ----------------------------------------------------------------------------
+    // Port en cBot cTrader de la strategie TradingView "VP Robot MTF - BUY/SELL Auto"
+    // (Pine Script v5) : profil de volume (POC / VAH / VAL) + filtres de tendance
+    // multi-timeframe (15 min et 1H) + confirmation RSI/volume + gestion du risque
+    // avec sortie en deux temps (TP1/TP2) et break-even.
+    //
+    // Differences assumees par rapport au script Pine d'origine :
+    //   - Le profil de volume est recalcule a CHAQUE cloture de bougie (OnBarClosed),
+    //     pas seulement sur `barstate.islast` comme dans le script Pine. Dans le
+    //     script original, cette restriction fait que le profil (et donc les
+    //     signaux) ne se met quasiment jamais a jour pendant un backtest Pine,
+    //     seulement sur la derniere bougie de l'historique charge. Recalculer a
+    //     chaque bougie rend la strategie reellement testable/tradable en continu,
+    //     en backtest cTrader comme en live.
+    //   - Le "volume" utilise est le tick volume cTrader (proxy standard pour le
+    //     forex/CFD, qui n'ont pas de volume reel centralise, contrairement aux
+    //     actions/crypto sur lesquelles tourne generalement TradingView).
+    //   - La sortie partielle TP1/TP2 du script Pine (strategy.exit avec
+    //     qty_percent=50 sur deux jambes) est reproduite avec DEUX positions
+    //     distinctes ouvertes simultanement (moitie du volume chacune), chacune
+    //     avec son propre stop loss et son propre take profit. C'est le pattern
+    //     natif cTrader pour une sortie partielle : le SL/TP est gere par le
+    //     broker, pas par une surveillance manuelle du prix bougie par bougie.
+    //   - Le tableau de bord et l'histogramme de volume (boxes colorees) du script
+    //     Pine ne sont pas reproduits a l'identique : seules les lignes POC/VAH/VAL
+    //     et un texte de statut condense sont affiches sur le graphique cTrader.
+    //
+    // IMPORTANT : comme pour tout bot automatise, testez en backtest puis en
+    // compte demo avant d'envisager un passage en reel.
+    // ============================================================================
+    [Robot(TimeZone = TimeZones.UTC, AccessRights = AccessRights.None)]
+    public class VolumeProfileMtfBot : Robot
+    {
+        // -- Volume Profile --
+        [Parameter("Barres (fenetre du profil)", Group = "Volume Profile", DefaultValue = 78, MinValue = 10, MaxValue = 500)]
+        public int VpBars { get; set; }
+
+        [Parameter("Lignes (Row Size)", Group = "Volume Profile", DefaultValue = 24, MinValue = 5, MaxValue = 100)]
+        public int VpRows { get; set; }
+
+        [Parameter("Value Area %", Group = "Volume Profile", DefaultValue = 70.0, MinValue = 0, MaxValue = 100)]
+        public double VpValueAreaPercent { get; set; }
+
+        // -- Filtres Multi-Timeframe --
+        [Parameter("Activer filtre HTF1", Group = "Multi-Timeframe", DefaultValue = true)]
+        public bool UseHtf1Filter { get; set; }
+
+        [Parameter("Activer filtre HTF2", Group = "Multi-Timeframe", DefaultValue = true)]
+        public bool UseHtf2Filter { get; set; }
+
+        [Parameter("HTF1 (intermediaire)", Group = "Multi-Timeframe", DefaultValue = "Minute15")]
+        public TimeFrame Htf1TimeFrame { get; set; }
+
+        [Parameter("HTF2 (haut)", Group = "Multi-Timeframe", DefaultValue = "Hour")]
+        public TimeFrame Htf2TimeFrame { get; set; }
+
+        // -- Signaux --
+        [Parameter("Tolerance zone (%)", Group = "Signaux", DefaultValue = 0.15, MinValue = 0.01, MaxValue = 1.0, Step = 0.01)]
+        public double ZoneTolerancePercent { get; set; }
+
+        [Parameter("Multiplicateur volume min", Group = "Signaux", DefaultValue = 1.2, MinValue = 1.0, MaxValue = 3.0, Step = 0.1)]
+        public double VolumeMultiplier { get; set; }
+
+        [Parameter("Confirmer avec RSI", Group = "Signaux", DefaultValue = true)]
+        public bool UseRsi { get; set; }
+
+        [Parameter("Longueur RSI", Group = "Signaux", DefaultValue = 14, MinValue = 2)]
+        public int RsiPeriod { get; set; }
+
+        [Parameter("RSI Overbought", Group = "Signaux", DefaultValue = 65.0, MinValue = 50.0)]
+        public double RsiOverbought { get; set; }
+
+        [Parameter("RSI Oversold", Group = "Signaux", DefaultValue = 35.0, MinValue = 10.0)]
+        public double RsiOversold { get; set; }
+
+        // -- Gestion du risque --
+        [Parameter("Taille position (% equity)", Group = "Risk Management", DefaultValue = 10.0, MinValue = 1, MaxValue = 100,
+            Description = "Notionnel engage par trade en % de l'equity, reparti a parts egales entre les deux jambes TP1/TP2 (equivalent de default_qty_value en percent_of_equity dans le script Pine).")]
+        public double PositionSizePercent { get; set; }
+
+        [Parameter("Stop Loss (%)", Group = "Risk Management", DefaultValue = 0.4, MinValue = 0.05, MaxValue = 5.0, Step = 0.05)]
+        public double StopLossPercent { get; set; }
+
+        [Parameter("TP1 (%)", Group = "Risk Management", DefaultValue = 0.4, MinValue = 0.05, MaxValue = 10.0, Step = 0.05)]
+        public double TakeProfit1Percent { get; set; }
+
+        [Parameter("TP2 (%)", Group = "Risk Management", DefaultValue = 0.8, MinValue = 0.05, MaxValue = 10.0, Step = 0.05)]
+        public double TakeProfit2Percent { get; set; }
+
+        [Parameter("Break-even apres TP1", Group = "Risk Management", DefaultValue = true)]
+        public bool UseBreakEven { get; set; }
+
+        [Parameter("Max pertes consecutives", Group = "Risk Management", DefaultValue = 3, MinValue = 1, MaxValue = 10)]
+        public int MaxConsecutiveLosses { get; set; }
+
+        // -- Filtre de session --
+        [Parameter("Filtrer les sessions", Group = "Session", DefaultValue = true)]
+        public bool UseSessionFilter { get; set; }
+
+        [Parameter("Session Londres (08-17 UTC)", Group = "Session", DefaultValue = true)]
+        public bool UseLondonSession { get; set; }
+
+        [Parameter("Session New York (13-22 UTC)", Group = "Session", DefaultValue = true)]
+        public bool UseNySession { get; set; }
+
+        [Parameter("Eviter 30min apres ouverture", Group = "Session", DefaultValue = true)]
+        public bool AvoidSessionOpen { get; set; }
+
+        // -- Divers --
+        [Parameter("Label", Group = "Misc", DefaultValue = "VPRobotMTF")]
+        public string Label { get; set; }
+
+        private const string Tp1Suffix = "_TP1";
+        private const string Tp2Suffix = "_TP2";
+
+        private Bars _htf1Bars;
+        private Bars _htf2Bars;
+        private MovingAverage _htf1Ema20;
+        private MovingAverage _htf1Ema50;
+        private MovingAverage _htf2Ema20;
+        private MovingAverage _htf2Ema50;
+        private RelativeStrengthIndex _rsi;
+        private MovingAverage _volumeAverage;
+
+        private double _poc = double.NaN;
+        private double _vah = double.NaN;
+        private double _val = double.NaN;
+
+        private int _consecutiveLosses;
+
+        protected override void OnStart()
+        {
+            _rsi = Indicators.RelativeStrengthIndex(Bars.ClosePrices, RsiPeriod);
+            _volumeAverage = Indicators.MovingAverage(Bars.TickVolumes, 20, MovingAverageType.Simple);
+
+            if (UseHtf1Filter)
+            {
+                _htf1Bars = MarketData.GetBars(Htf1TimeFrame, SymbolName);
+                _htf1Ema20 = Indicators.MovingAverage(_htf1Bars.ClosePrices, 20, MovingAverageType.Exponential);
+                _htf1Ema50 = Indicators.MovingAverage(_htf1Bars.ClosePrices, 50, MovingAverageType.Exponential);
+            }
+
+            if (UseHtf2Filter)
+            {
+                _htf2Bars = MarketData.GetBars(Htf2TimeFrame, SymbolName);
+                _htf2Ema20 = Indicators.MovingAverage(_htf2Bars.ClosePrices, 20, MovingAverageType.Exponential);
+                _htf2Ema50 = Indicators.MovingAverage(_htf2Bars.ClosePrices, 50, MovingAverageType.Exponential);
+            }
+
+            Positions.Closed += OnPositionClosed;
+
+            Print("VolumeProfileMtfBot started on {0} {1}", SymbolName, TimeFrame);
+        }
+
+        protected override void OnBarClosed()
+        {
+            if (!TryCalculateVolumeProfile())
+                return;
+
+            DrawLevels();
+
+            var minBars = Math.Max(VpBars, RsiPeriod) + 2;
+            if (Bars.ClosePrices.Count < minBars)
+                return;
+
+            if (HasOpenPosition())
+                return;
+
+            var barTimeUtc = Bars.OpenTimes.Last(1);
+            if (!IsSessionOk(barTimeUtc))
+                return;
+
+            if (_consecutiveLosses >= MaxConsecutiveLosses)
+                return;
+
+            var close = Bars.ClosePrices.Last(1);
+            var prevClose = Bars.ClosePrices.Last(2);
+            var open = Bars.OpenPrices.Last(1);
+            var high = Bars.HighPrices.Last(1);
+            var low = Bars.LowPrices.Last(1);
+            var volume = Bars.TickVolumes.Last(1);
+            var volAvg = _volumeAverage.Result.Last(1);
+
+            var tol = close * ZoneTolerancePercent / 100.0;
+            var volOk = volAvg > 0 && volume > volAvg * VolumeMultiplier;
+
+            var nearVal = Math.Abs(close - _val) <= tol;
+            var nearPoc = Math.Abs(close - _poc) <= tol;
+            var nearVah = Math.Abs(close - _vah) <= tol;
+
+            var crossVah = prevClose <= _vah && close > _vah;
+            var crossVal = prevClose >= _val && close < _val;
+            var crossPocUp = prevClose <= _poc && close > _poc;
+            var crossPocDown = prevClose >= _poc && close < _poc;
+
+            var bullCandle = close > open && (close - open) > (high - close) * 0.5;
+            var bearCandle = close < open && (open - close) > (close - low) * 0.5;
+
+            var rsiValue = _rsi.Result.Last(1);
+            var rsiBuyOk = !UseRsi || rsiValue < RsiOverbought;
+            var rsiSellOk = !UseRsi || rsiValue > RsiOversold;
+
+            bool htf1Bull, htf1Bear, htf2Bull, htf2Bear;
+            GetHtfTrend(out htf1Bull, out htf1Bear, out htf2Bull, out htf2Bear);
+
+            var trendOkBull = (!UseHtf1Filter || htf1Bull) && (!UseHtf2Filter || htf2Bull);
+            var trendOkBear = (!UseHtf1Filter || htf1Bear) && (!UseHtf2Filter || htf2Bear);
+
+            var buyVal = nearVal && bullCandle && volOk && trendOkBull && rsiBuyOk;
+            var buyPoc = nearPoc && crossPocUp && bullCandle && volOk && trendOkBull && rsiBuyOk;
+            var buyVah = crossVah && bullCandle && volOk && trendOkBull && rsiBuyOk;
+            var buySignal = buyVal || buyPoc || buyVah;
+
+            var sellVah = nearVah && bearCandle && volOk && trendOkBear && rsiSellOk;
+            var sellPoc = nearPoc && crossPocDown && bearCandle && volOk && trendOkBear && rsiSellOk;
+            var sellVal = crossVal && bearCandle && volOk && trendOkBear && rsiSellOk;
+            var sellSignal = sellVah || sellPoc || sellVal;
+
+            if (buySignal)
+            {
+                var reason = buyVal ? "Rebond VAL" : buyPoc ? "Rebond POC" : "Cassure VAH";
+                TryEnter(TradeType.Buy, close, reason);
+            }
+            else if (sellSignal)
+            {
+                var reason = sellVah ? "Rejet VAH" : sellPoc ? "Rejet POC" : "Cassure VAL";
+                TryEnter(TradeType.Sell, close, reason);
+            }
+        }
+
+        private void TryEnter(TradeType tradeType, double closePrice, string reason)
+        {
+            var stopLossPips = (closePrice * StopLossPercent / 100.0) / Symbol.PipSize;
+            var tp1Pips = (closePrice * TakeProfit1Percent / 100.0) / Symbol.PipSize;
+            var tp2Pips = (closePrice * TakeProfit2Percent / 100.0) / Symbol.PipSize;
+
+            if (stopLossPips <= 0 || tp1Pips <= 0 || tp2Pips <= 0)
+                return;
+
+            var totalVolume = CalculatePositionVolume();
+            if (totalVolume <= 0)
+            {
+                Print("Volume calcule = 0, entree ignoree (taille de position vs capital).");
+                return;
+            }
+
+            var halfVolume = Symbol.NormalizeVolumeInUnits(totalVolume / 2.0, RoundingMode.Down);
+            var remainderVolume = Symbol.NormalizeVolumeInUnits(totalVolume - halfVolume, RoundingMode.Down);
+
+            if (halfVolume < Symbol.VolumeInUnitsMin || remainderVolume < Symbol.VolumeInUnitsMin)
+            {
+                Print("Volume trop faible pour scinder en jambes TP1/TP2, entree ignoree.");
+                return;
+            }
+
+            var tp1Result = ExecuteMarketOrder(tradeType, SymbolName, halfVolume, Label + Tp1Suffix, stopLossPips, tp1Pips, reason + " (TP1)");
+            var tp2Result = ExecuteMarketOrder(tradeType, SymbolName, remainderVolume, Label + Tp2Suffix, stopLossPips, tp2Pips, reason + " (TP2)");
+
+            if (tp1Result.IsSuccessful && tp2Result.IsSuccessful)
+                Print("{0} entree remplie ({1}). Volume total: {2}, SL: {3} pips, TP1: {4} pips, TP2: {5} pips",
+                    tradeType, reason, totalVolume, Math.Round(stopLossPips, 1), Math.Round(tp1Pips, 1), Math.Round(tp2Pips, 1));
+            else
+                Print("Echec d'entree - TP1: {0}, TP2: {1}", tp1Result.Error, tp2Result.Error);
+        }
+
+        private long CalculatePositionVolume()
+        {
+            var notional = Account.Equity * (PositionSizePercent / 100.0);
+            var rawVolume = notional / Symbol.Bid;
+            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
+
+            if (normalized < Symbol.VolumeInUnitsMin)
+                return 0;
+
+            if (normalized > Symbol.VolumeInUnitsMax)
+                normalized = Symbol.VolumeInUnitsMax;
+
+            return (long)normalized;
+        }
+
+        private bool HasOpenPosition()
+        {
+            return Positions.Find(Label + Tp1Suffix, SymbolName) != null || Positions.Find(Label + Tp2Suffix, SymbolName) != null;
+        }
+
+        private void OnPositionClosed(PositionClosedEventArgs args)
+        {
+            var position = args.Position;
+            if (position.SymbolName != SymbolName)
+                return;
+
+            var isTp1 = position.Label == Label + Tp1Suffix;
+            var isTp2 = position.Label == Label + Tp2Suffix;
+            if (!isTp1 && !isTp2)
+                return;
+
+            if (position.NetProfit < 0)
+                _consecutiveLosses++;
+            else
+                _consecutiveLosses = 0;
+
+            if (isTp1 && UseBreakEven && position.NetProfit > 0)
+            {
+                var remaining = Positions.Find(Label + Tp2Suffix, SymbolName);
+                if (remaining != null)
+                    ModifyPosition(remaining, remaining.EntryPrice, remaining.TakeProfit);
+            }
+        }
+
+        private void GetHtfTrend(out bool htf1Bull, out bool htf1Bear, out bool htf2Bull, out bool htf2Bear)
+        {
+            htf1Bull = htf1Bear = htf2Bull = htf2Bear = false;
+
+            if (UseHtf1Filter && _htf1Ema20.Result.Count > 0 && _htf1Ema50.Result.Count > 0)
+            {
+                var e20 = _htf1Ema20.Result.LastValue;
+                var e50 = _htf1Ema50.Result.LastValue;
+                htf1Bull = e20 > e50;
+                htf1Bear = e20 < e50;
+            }
+
+            if (UseHtf2Filter && _htf2Ema20.Result.Count > 0 && _htf2Ema50.Result.Count > 0)
+            {
+                var e20 = _htf2Ema20.Result.LastValue;
+                var e50 = _htf2Ema50.Result.LastValue;
+                htf2Bull = e20 > e50;
+                htf2Bear = e20 < e50;
+            }
+        }
+
+        private bool IsSessionOk(DateTime barTimeUtc)
+        {
+            var hour = barTimeUtc.Hour;
+            var inLondon = hour >= 8 && hour < 17;
+            var inNy = hour >= 13 && hour < 22;
+
+            if (!UseSessionFilter)
+                return true;
+
+            var sessOk = (UseLondonSession && inLondon) || (UseNySession && inNy);
+
+            var minuteOfDay = hour * 60 + barTimeUtc.Minute;
+            var openAvoid = AvoidSessionOpen &&
+                ((minuteOfDay >= 480 && minuteOfDay < 510) ||
+                 (minuteOfDay >= 810 && minuteOfDay < 840));
+
+            return sessOk && !openAvoid;
+        }
+
+        private bool TryCalculateVolumeProfile()
+        {
+            if (Bars.ClosePrices.Count <= VpBars + 1)
+                return false;
+
+            var top = double.MinValue;
+            var bot = double.MaxValue;
+
+            for (var i = 1; i <= VpBars; i++)
+            {
+                top = Math.Max(top, Bars.HighPrices.Last(i));
+                bot = Math.Min(bot, Bars.LowPrices.Last(i));
+            }
+
+            if (top <= bot)
+                return false;
+
+            var step = (top - bot) / VpRows;
+            var levels = new double[VpRows + 1];
+            for (var x = 0; x <= VpRows; x++)
+                levels[x] = bot + step * x;
+
+            var volumesUp = new double[VpRows];
+            var volumesDown = new double[VpRows];
+
+            for (var i = 1; i <= VpBars; i++)
+            {
+                var o = Bars.OpenPrices.Last(i);
+                var c = Bars.ClosePrices.Last(i);
+                var h = Bars.HighPrices.Last(i);
+                var l = Bars.LowPrices.Last(i);
+                var v = Bars.TickVolumes.Last(i);
+
+                var bt = Math.Max(c, o);
+                var bb = Math.Min(c, o);
+                var green = c >= o;
+                var tw = h - bt;
+                var bw = bb - l;
+                var bd = bt - bb;
+                var den = 2 * tw + 2 * bw + bd;
+
+                if (den <= 0)
+                    continue;
+
+                var bodyVolume = bd * v / den;
+                var topWickVolume = 2 * tw * v / den;
+                var bottomWickVolume = 2 * bw * v / den;
+
+                for (var x = 0; x < VpRows; x++)
+                {
+                    var lx = levels[x];
+                    var lx1 = levels[x + 1];
+
+                    var bodyVol = GetVol(lx, lx1, bb, bt, bd, bodyVolume);
+                    var upperWickVol = GetVol(lx, lx1, bt, h, tw, topWickVolume) / 2;
+                    var lowerWickVol = GetVol(lx, lx1, bb, l, bw, bottomWickVolume) / 2;
+
+                    volumesUp[x] += (green ? bodyVol : 0) + upperWickVol + lowerWickVol;
+                    volumesDown[x] += (green ? 0 : bodyVol) + upperWickVol + lowerWickVol;
+                }
+            }
+
+            var totalVols = new double[VpRows];
+            var totalSum = 0.0;
+            for (var x = 0; x < VpRows; x++)
+            {
+                totalVols[x] = volumesUp[x] + volumesDown[x];
+                totalSum += totalVols[x];
+            }
+
+            if (totalSum <= 0)
+                return false;
+
+            var pocIdx = 0;
+            var maxVol = totalVols[0];
+            for (var x = 1; x < VpRows; x++)
+            {
+                if (totalVols[x] > maxVol)
+                {
+                    maxVol = totalVols[x];
+                    pocIdx = x;
+                }
+            }
+
+            var target = totalSum * VpValueAreaPercent / 100.0;
+            var vaTotal = totalVols[pocIdx];
+            var upIdx = pocIdx;
+            var dnIdx = pocIdx;
+
+            for (var x = 0; x < VpRows; x++)
+            {
+                if (vaTotal >= target)
+                    break;
+
+                var uv = upIdx < VpRows - 1 ? totalVols[upIdx + 1] : 0.0;
+                var lv = dnIdx > 0 ? totalVols[dnIdx - 1] : 0.0;
+
+                if (uv == 0.0 && lv == 0.0)
+                    break;
+
+                if (uv >= lv)
+                {
+                    vaTotal += uv;
+                    upIdx++;
+                }
+                else
+                {
+                    vaTotal += lv;
+                    dnIdx--;
+                }
+            }
+
+            _poc = (levels[pocIdx] + levels[pocIdx + 1]) / 2.0;
+            _vah = levels[upIdx + 1];
+            _val = levels[dnIdx];
+
+            return true;
+        }
+
+        private static double GetVol(double y11, double y12, double y21, double y22, double h, double vol)
+        {
+            if (h <= 0)
+                return 0;
+
+            var overlap = Math.Max(Math.Min(Math.Max(y11, y12), Math.Max(y21, y22)) - Math.Max(Math.Min(y11, y12), Math.Min(y21, y22)), 0);
+            return overlap * vol / h;
+        }
+
+        private void DrawLevels()
+        {
+            if (Chart == null)
+                return;
+
+            Chart.DrawHorizontalLine("vp_poc", _poc, Color.Red, 2, LineStyle.Solid);
+            Chart.DrawHorizontalLine("vp_vah", _vah, Color.LimeGreen, 1, LineStyle.Dots);
+            Chart.DrawHorizontalLine("vp_val", _val, Color.OrangeRed, 1, LineStyle.Dots);
+
+            var robotOn = _consecutiveLosses < MaxConsecutiveLosses;
+            var statusColor = robotOn ? Color.LimeGreen : Color.Red;
+            var status = robotOn ? "ACTIF" : "PAUSE";
+
+            var text = string.Format(
+                "VP Robot MTF - {0}\nPOC: {1:0.####} | VAH: {2:0.####} | VAL: {3:0.####}\nPertes consecutives: {4}/{5}",
+                status, _poc, _vah, _val, _consecutiveLosses, MaxConsecutiveLosses);
+
+            Chart.DrawStaticText("vp_status", text, VerticalAlignment.Top, HorizontalAlignment.Right, statusColor);
+        }
+    }
+}
