@@ -20,6 +20,7 @@ Le trading sur marge (CFD, Forex, or) comporte un risque de perte important, y c
 - **Filtre de volatilité (ATR)** : le signal n'est pris en compte que si l'ATR actuel est proche ou au-dessus de sa propre moyenne, pour éviter les faux signaux en marché plat/sans tendance
 - **Stop loss initial** : basé sur un multiple de l'ATR (s'adapte automatiquement à la volatilité du moment)
 - **Trailing stop** : basé sur l'ATR également, ne remonte/descend le stop que dans le sens favorable
+- **Take-profit fixe (optionnel)** : désactivé par défaut ; si activé, un take-profit basé sur un multiple de l'ATR est posé dès l'entrée, en complément du trailing stop
 - **Taille de position** : calculée automatiquement à partir d'un % du capital risqué par trade (pas un lot fixe)
 - **Filtre de spread** : n'entre pas en position si le spread est anormalement large (ex: pendant une actu majeure)
 
@@ -63,6 +64,8 @@ Git ne fait tourner aucun code : cTrader doit rester ouvert (ou tourner sur un V
 | ATR Filter Threshold (%) | 80 | Seuil minimum de volatilité pour trader |
 | Stop Loss (x ATR) | 2.0 | Distance du stop initial |
 | Trailing Stop (x ATR) | 2.0 | Distance du trailing stop |
+| Use Fixed Take Profit | false | Active un take-profit fixe posé à l'entrée |
+| Take Profit (x ATR) | 4.0 | Distance du take-profit fixe (si activé) |
 | Risk per Trade (%) | 1.0 | % du capital risqué par trade |
 | Max Spread (pips) | 50 | Sécurité anti-spread élevé |
 
@@ -70,5 +73,4 @@ Git ne fait tourner aucun code : cTrader doit rester ouvert (ou tourner sur un V
 
 - Ajouter un filtre de tendance long-terme (ex: MA 200 sur timeframe supérieur)
 - Ajouter des horaires de trading (éviter les sessions creuses)
-- Ajouter un take-profit fixe optionnel en complément du trailing stop
 - Logger les trades dans un fichier pour analyse de performance

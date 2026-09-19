@@ -19,6 +19,8 @@ namespace cAlgo.Robots
     //   - Initial stop loss is placed at a multiple of ATR from entry.
     //   - An ATR-based trailing stop protects profits once the trade moves in
     //     our favour.
+    //   - An optional fixed take-profit (also a multiple of ATR) can be set
+    //     at entry time, in addition to the trailing stop.
     //
     // IMPORTANT: This is a starting point, NOT a guaranteed money-maker.
     // No strategy works 100% of the time. Always test on a DEMO account first,
@@ -52,6 +54,13 @@ namespace cAlgo.Robots
 
         [Parameter("Trailing Stop (x ATR)", Group = "Risk Management", DefaultValue = 2.0, MinValue = 0.5)]
         public double TrailingStopAtrMultiplier { get; set; }
+
+        [Parameter("Use Fixed Take Profit", Group = "Risk Management", DefaultValue = false,
+            Description = "Optional fixed take-profit set at entry, in addition to the ATR trailing stop. Leave off to rely on the trailing stop / opposite signal only.")]
+        public bool UseTakeProfit { get; set; }
+
+        [Parameter("Take Profit (x ATR)", Group = "Risk Management", DefaultValue = 4.0, MinValue = 0.5)]
+        public double TakeProfitAtrMultiplier { get; set; }
 
         [Parameter("Risk per Trade (%)", Group = "Risk Management", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10)]
         public double RiskPercent { get; set; }
@@ -149,10 +158,15 @@ namespace cAlgo.Robots
                 return;
             }
 
-            var result = ExecuteMarketOrder(tradeType, SymbolName, volume, Label, stopLossPips, null);
+            double? takeProfitPips = null;
+            if (UseTakeProfit)
+                takeProfitPips = (atrValue * TakeProfitAtrMultiplier) / Symbol.PipSize;
+
+            var result = ExecuteMarketOrder(tradeType, SymbolName, volume, Label, stopLossPips, takeProfitPips);
 
             if (result.IsSuccessful)
-                Print("{0} entry filled. Volume: {1}, SL distance: {2} pips (ATR-based)", tradeType, volume, Math.Round(stopLossPips, 1));
+                Print("{0} entry filled. Volume: {1}, SL distance: {2} pips (ATR-based), TP distance: {3} (ATR-based)",
+                    tradeType, volume, Math.Round(stopLossPips, 1), takeProfitPips.HasValue ? Math.Round(takeProfitPips.Value, 1).ToString() : "none");
             else
                 Print("Order failed: {0}", result.Error);
         }
