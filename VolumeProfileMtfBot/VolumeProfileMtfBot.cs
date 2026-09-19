@@ -102,6 +102,18 @@ namespace cAlgo.Robots
         [Parameter("Max pertes consecutives", Group = "Risk Management", DefaultValue = 3, MinValue = 1, MaxValue = 10)]
         public int MaxConsecutiveLosses { get; set; }
 
+        [Parameter("Activer limite de perte journaliere", Group = "Risk Management", DefaultValue = true)]
+        public bool UseDailyLossLimit { get; set; }
+
+        [Parameter("Perte journaliere max (%)", Group = "Risk Management", DefaultValue = 5.0, MinValue = 0.5, MaxValue = 50.0, Step = 0.5,
+            Description = "Suspend les nouvelles entrees jusqu'au lendemain (UTC) si la perte cumulee depuis le debut de la journee depasse ce % du solde de debut de journee.")]
+        public double MaxDailyLossPercent { get; set; }
+
+        // -- Securite --
+        [Parameter("Max Spread (pips)", Group = "Safety", DefaultValue = 50, MinValue = 0,
+            Description = "Ignore les nouvelles entrees si le spread courant depasse ce seuil, pour eviter de trader en pleine actu/illiquidite.")]
+        public double MaxSpreadPips { get; set; }
+
         // -- Filtre de session --
         [Parameter("Filtrer les sessions", Group = "Session", DefaultValue = true)]
         public bool UseSessionFilter { get; set; }
@@ -145,6 +157,10 @@ namespace cAlgo.Robots
         private int _openLegsInRound;
         private double _roundNetProfit;
 
+        private DateTime _currentDay = DateTime.MinValue;
+        private double _dayStartBalance;
+        private bool _dailyLossLimitHit;
+
         protected override void OnStart()
         {
             _rsi = Indicators.RelativeStrengthIndex(Bars.ClosePrices, RsiPeriod);
@@ -180,15 +196,26 @@ namespace cAlgo.Robots
             if (Bars.ClosePrices.Count < minBars)
                 return;
 
+            var barTimeUtc = Bars.OpenTimes.Last(1);
+            UpdateDailyLossState(barTimeUtc);
+
             if (HasOpenPosition())
                 return;
 
-            var barTimeUtc = Bars.OpenTimes.Last(1);
             if (!IsSessionOk(barTimeUtc))
                 return;
 
             if (_consecutiveLosses >= MaxConsecutiveLosses)
                 return;
+
+            if (_dailyLossLimitHit)
+                return;
+
+            if (Symbol.Spread / Symbol.PipSize > MaxSpreadPips)
+            {
+                Print("Spread trop large ({0} pips), entrees ignorees ce cycle.", Math.Round(Symbol.Spread / Symbol.PipSize, 1));
+                return;
+            }
 
             var close = Bars.ClosePrices.Last(1);
             var prevClose = Bars.ClosePrices.Last(2);
@@ -327,6 +354,9 @@ namespace cAlgo.Robots
             if (!isTp1 && !isTp2)
                 return;
 
+            Print("Position fermee ({0}, {1}). Entree: {2}, Net: {3:0.00} {4} ({5:0.0} pips)",
+                isTp1 ? "TP1" : "TP2", position.TradeType, position.EntryPrice, position.NetProfit, Account.Asset.Name, position.Pips);
+
             // _openLegsInRound == 0 ici signifie que cette position n'appartient pas
             // a un round correctement ouvert (ex: jambe orpheline refermee juste
             // apres un echec partiel dans TryEnter) : on l'ignore pour le suivi des
@@ -343,6 +373,9 @@ namespace cAlgo.Robots
                     _consecutiveLosses++;
                 else
                     _consecutiveLosses = 0;
+
+                Print("Round termine. PnL combine: {0:0.00} {1}. Pertes consecutives: {2}/{3}",
+                    _roundNetProfit, Account.Asset.Name, _consecutiveLosses, MaxConsecutiveLosses);
 
                 _roundNetProfit = 0;
             }
@@ -373,6 +406,28 @@ namespace cAlgo.Robots
                 var e50 = _htf2Ema50.Result.LastValue;
                 htf2Bull = e20 > e50;
                 htf2Bear = e20 < e50;
+            }
+        }
+
+        private void UpdateDailyLossState(DateTime barTimeUtc)
+        {
+            var day = barTimeUtc.Date;
+            if (day != _currentDay)
+            {
+                _currentDay = day;
+                _dayStartBalance = Account.Balance;
+                _dailyLossLimitHit = false;
+            }
+
+            if (!UseDailyLossLimit || _dailyLossLimitHit || _dayStartBalance <= 0)
+                return;
+
+            var dailyLossPercent = (_dayStartBalance - Account.Equity) / _dayStartBalance * 100.0;
+            if (dailyLossPercent >= MaxDailyLossPercent)
+            {
+                _dailyLossLimitHit = true;
+                Print("Limite de perte journaliere atteinte ({0:0.0}% >= {1:0.0}%), entrees suspendues jusqu'a demain (UTC).",
+                    dailyLossPercent, MaxDailyLossPercent);
             }
         }
 
@@ -536,13 +591,14 @@ namespace cAlgo.Robots
             Chart.DrawHorizontalLine("vp_vah", _vah, Color.LimeGreen, 1, LineStyle.Dots);
             Chart.DrawHorizontalLine("vp_val", _val, Color.OrangeRed, 1, LineStyle.Dots);
 
-            var robotOn = _consecutiveLosses < MaxConsecutiveLosses;
+            var robotOn = _consecutiveLosses < MaxConsecutiveLosses && !_dailyLossLimitHit;
             var statusColor = robotOn ? Color.LimeGreen : Color.Red;
             var status = robotOn ? "ACTIF" : "PAUSE";
 
             var text = string.Format(
-                "VP Robot MTF - {0}\nPOC: {1:0.####} | VAH: {2:0.####} | VAL: {3:0.####}\nPertes consecutives: {4}/{5}",
-                status, _poc, _vah, _val, _consecutiveLosses, MaxConsecutiveLosses);
+                "VP Robot MTF - {0}\nPOC: {1:0.####} | VAH: {2:0.####} | VAL: {3:0.####}\nPertes consecutives: {4}/{5}{6}",
+                status, _poc, _vah, _val, _consecutiveLosses, MaxConsecutiveLosses,
+                _dailyLossLimitHit ? "\nLimite perte journaliere atteinte" : "");
 
             Chart.DrawStaticText("vp_status", text, VerticalAlignment.Top, HorizontalAlignment.Right, statusColor);
         }

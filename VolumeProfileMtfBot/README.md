@@ -37,8 +37,11 @@ La logique de signal (zones VAL/POC/VAH, bougie directionnelle, filtre de volume
   - Stop loss et deux niveaux de take profit (TP1/TP2) définis en % du prix
   - Taille de position en % de l'equity, répartie entre les deux jambes TP1/TP2
   - Break-even automatique sur la jambe TP2 restante une fois TP1 atteint (optionnel)
-  - Pause automatique après un nombre configurable de pertes consécutives
+  - Pause automatique après un nombre configurable de pertes consécutives (évaluées par round TP1+TP2 combiné, pas par jambe)
+  - Limite de perte journalière (%) : suspend les nouvelles entrées jusqu'au lendemain (UTC) si la perte cumulée depuis le début de journée dépasse ce seuil
 - **Filtre de session** : trading limité aux sessions Londres/New York (UTC), avec option pour éviter les 30 premières minutes après l'ouverture de chaque session
+- **Filtre de spread** : ignore les nouvelles entrées si le spread courant dépasse un seuil configurable (protection anti-actu/illiquidité, comme GoldTrendBot)
+- **Logs de fermeture de position** : chaque jambe fermée (TP1/TP2) est journalisée avec son P&L, ainsi qu'un résumé combiné (round complet + compteur de pertes consécutives) une fois les deux jambes closes
 
 Tous ces paramètres sont réglables dans l'interface cTrader (onglet Parameters du bot), regroupés par catégorie (Volume Profile, Multi-Timeframe, Signaux, Risk Management, Session).
 
@@ -71,11 +74,12 @@ Même principe que pour GoldTrendBot : ce dépôt reste la source de vérité ve
 | Stop Loss / TP1 / TP2 (%) | 0.4 / 0.4 / 0.8 | Distances de sortie en % du prix |
 | Break-even après TP1 | true | Sécurise la position restante une fois TP1 atteint |
 | Max pertes consécutives | 3 | Nombre de pertes d'affilée avant mise en pause du robot |
+| Perte journalière max (%) | 5.0 | Coupe-circuit : suspend les entrées pour le reste de la journée (UTC) si dépassé |
+| Max Spread (pips) | 50 | Sécurité anti-spread élevé |
 | Filtre de session | true | Limite le trading aux sessions Londres/New York |
 
 ## Prochaines étapes possibles
 
 - Ajouter des alertes cTrader (notifications) en plus des logs `Print`
 - Reproduire l'histogramme de volume complet (boxes) sur le graphique
-- Ajouter un filtre de spread comme dans GoldTrendBot
 - Logger les trades dans un fichier pour analyse de performance
