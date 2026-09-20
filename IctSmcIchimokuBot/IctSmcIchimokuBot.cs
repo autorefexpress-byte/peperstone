@@ -591,8 +591,10 @@ namespace cAlgo.Robots
 
                             if (validRejection && bullishBias)
                             {
-                                ExecuteEntry(TradeType.Buy, _pendingBuySetup.ZoneLow, "Retracement OB/FVG haussier");
-                                _pendingBuySetup.Active = false;
+                                // Ne consomme la zone que si l'ordre part reellement -
+                                // un echec technique la laisse active pour retenter.
+                                if (ExecuteEntry(TradeType.Buy, _pendingBuySetup.ZoneLow, "Retracement OB/FVG haussier"))
+                                    _pendingBuySetup.Active = false;
                                 return;
                             }
 
@@ -634,8 +636,8 @@ namespace cAlgo.Robots
 
                             if (validRejection && bearishBias)
                             {
-                                ExecuteEntry(TradeType.Sell, _pendingSellSetup.ZoneHigh, "Retracement OB/FVG baissier");
-                                _pendingSellSetup.Active = false;
+                                if (ExecuteEntry(TradeType.Sell, _pendingSellSetup.ZoneHigh, "Retracement OB/FVG baissier"))
+                                    _pendingSellSetup.Active = false;
                             }
                             else if (FirstTouchOnly && !validRejection)
                             {
@@ -647,7 +649,7 @@ namespace cAlgo.Robots
             }
         }
 
-        private void ExecuteEntry(TradeType tradeType, double zoneExtreme, string reason)
+        private bool ExecuteEntry(TradeType tradeType, double zoneExtreme, string reason)
         {
             var slBufferPrice = StopLossBufferPips * Symbol.PipSize;
             var entryPrice = tradeType == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
@@ -655,7 +657,7 @@ namespace cAlgo.Robots
 
             var stopLossPips = Math.Abs(entryPrice - stopLossPrice) / Symbol.PipSize;
             if (stopLossPips <= 0)
-                return;
+                return false;
 
             var takeProfitPips = stopLossPips * RiskRewardRatio;
 
@@ -663,7 +665,7 @@ namespace cAlgo.Robots
             if (volume <= 0)
             {
                 Print("Volume calcule = 0, entree ignoree (risque vs capital).");
-                return;
+                return false;
             }
 
             var result = ExecuteMarketOrder(tradeType, SymbolName, volume, Label, stopLossPips, takeProfitPips, reason);
@@ -673,11 +675,11 @@ namespace cAlgo.Robots
                 _breakEvenDone = false;
                 Print("{0} entree remplie ({1}). SL: {2} pips, TP: {3} pips ({4}R)",
                     tradeType, reason, Math.Round(stopLossPips, 1), Math.Round(takeProfitPips, 1), RiskRewardRatio);
+                return true;
             }
-            else
-            {
-                Print("Echec d'entree: {0}", result.Error);
-            }
+
+            Print("Echec d'entree: {0}", result.Error);
+            return false;
         }
 
         private double CalculatePositionVolume(double stopLossPips)
