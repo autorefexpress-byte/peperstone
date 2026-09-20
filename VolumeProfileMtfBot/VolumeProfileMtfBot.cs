@@ -41,9 +41,11 @@ namespace cAlgo.Robots
     public class VolumeProfileMtfBot : Robot
     {
         // -- Volume Profile --
-        // Defauts calibres pour un chart de base en 15 min (26 barres ~ 6h30, la
-        // duree visee a l'origine par le script Pine avec 78 barres en 5 min).
-        [Parameter("Barres (fenetre du profil)", Group = "Volume Profile", DefaultValue = 26, MinValue = 10, MaxValue = 500)]
+        // Defauts calibres pour un chart de base en 4H (30 barres ~ 1 semaine de
+        // trading = 6 barres/jour x 5 jours). Sur ce timeframe on est en swing
+        // trading, la logique "1 session intraday" du script Pine d'origine (78
+        // barres en 5 min) ne s'applique plus - fenetre hebdomadaire a la place.
+        [Parameter("Barres (fenetre du profil)", Group = "Volume Profile", DefaultValue = 30, MinValue = 10, MaxValue = 500)]
         public int VpBars { get; set; }
 
         [Parameter("Lignes (Row Size)", Group = "Volume Profile", DefaultValue = 24, MinValue = 5, MaxValue = 100)]
@@ -59,10 +61,10 @@ namespace cAlgo.Robots
         [Parameter("Activer filtre HTF2", Group = "Multi-Timeframe", DefaultValue = true)]
         public bool UseHtf2Filter { get; set; }
 
-        [Parameter("HTF1 (intermediaire)", Group = "Multi-Timeframe", DefaultValue = "Hour")]
+        [Parameter("HTF1 (intermediaire)", Group = "Multi-Timeframe", DefaultValue = "Daily")]
         public TimeFrame Htf1TimeFrame { get; set; }
 
-        [Parameter("HTF2 (haut)", Group = "Multi-Timeframe", DefaultValue = "Hour4")]
+        [Parameter("HTF2 (haut)", Group = "Multi-Timeframe", DefaultValue = "Weekly")]
         public TimeFrame Htf2TimeFrame { get; set; }
 
         // -- Signaux --
@@ -89,16 +91,17 @@ namespace cAlgo.Robots
             Description = "Notionnel engage par trade en % de l'equity, reparti a parts egales entre les deux jambes TP1/TP2 (equivalent de default_qty_value en percent_of_equity dans le script Pine).")]
         public double PositionSizePercent { get; set; }
 
-        // SL/TP1/TP2 elargis x1.5 par rapport aux defauts 5 min d'origine (0.4/0.4/0.8),
-        // pour tenir compte de l'amplitude plus grande des bougies 15 min. Ratio
-        // 1:1:2 conserve - a reaffiner par backtest, pas une calibration precise.
-        [Parameter("Stop Loss (%)", Group = "Risk Management", DefaultValue = 0.6, MinValue = 0.05, MaxValue = 5.0, Step = 0.05)]
+        // SL/TP1/TP2 elargis x4 par rapport aux defauts 5 min d'origine (0.4/0.4/0.8),
+        // pour tenir compte de l'amplitude bien plus grande des bougies 4H (swing
+        // trading). Ratio 1:1:2 conserve - a reaffiner par backtest, pas une
+        // calibration precise.
+        [Parameter("Stop Loss (%)", Group = "Risk Management", DefaultValue = 2.5, MinValue = 0.05, MaxValue = 10.0, Step = 0.05)]
         public double StopLossPercent { get; set; }
 
-        [Parameter("TP1 (%)", Group = "Risk Management", DefaultValue = 0.6, MinValue = 0.05, MaxValue = 10.0, Step = 0.05)]
+        [Parameter("TP1 (%)", Group = "Risk Management", DefaultValue = 2.5, MinValue = 0.05, MaxValue = 10.0, Step = 0.05)]
         public double TakeProfit1Percent { get; set; }
 
-        [Parameter("TP2 (%)", Group = "Risk Management", DefaultValue = 1.2, MinValue = 0.05, MaxValue = 10.0, Step = 0.05)]
+        [Parameter("TP2 (%)", Group = "Risk Management", DefaultValue = 5.0, MinValue = 0.05, MaxValue = 15.0, Step = 0.05)]
         public double TakeProfit2Percent { get; set; }
 
         [Parameter("Break-even apres TP1", Group = "Risk Management", DefaultValue = true)]
