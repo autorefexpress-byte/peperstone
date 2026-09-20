@@ -23,14 +23,17 @@ Sur chaque bougie clôturée :
 5. **Fair Value Gap (FVG)** : premier gap à 3 bougies (imbalance) trouvé entre le sweep et le BOS
 6. **Zone d'entrée** : Order Block et FVG sont fusionnés en une seule zone de surveillance (simplification — en théorie ICT ce sont deux zones distinctes avec des priorités différentes)
 7. **Entrée** : quand le prix revient dans la zone avec une bougie de rejet dans le sens du setup, **ET** que le biais Ichimoku est aligné (prix au-dessus/en-dessous du nuage), **ET** qu'on est dans un créneau horaire actif (Londres/New York) → entrée
-8. **Stop loss** au-delà de la zone (+ buffer en pips), **take profit** à un multiple R du risque, **break-even optionnel à 1R**
+8. **Premier contact uniquement** (par défaut) : si le prix touche la zone sans donner de bougie de rejet valide, elle est abandonnée plutôt que de rester en attente pour un 2e/3e retest — un order block se "mitige" à chaque retest en théorie ICT
+9. **Stop loss** au-delà de la zone (+ buffer en pips), **take profit** à un multiple R du risque, **break-even optionnel à 1R**
 
 La détection de structure/sweep/BOS tourne en continu (24h/24) ; seule l'**entrée** est restreinte aux créneaux horaires actifs.
 
 ## Différences et choix assumés
 
 - **Ichimoku recalculé manuellement** à partir des prix bruts (plus haut/plus bas glissants), plutôt que via l'indicateur `IchimokuKinkoHyo` natif de cAlgo. Raison : le décalage vers l'avant du nuage (Senkou Span A/B, généralement +26 périodes) peut être géré différemment selon la convention interne de l'indicateur natif, et une erreur de décalage inverserait silencieusement tout le filtre de tendance. Le calcul manuel permet de contrôler précisément ce décalage. **À vérifier visuellement** en comparant avec l'indicateur Ichimoku natif sur le même graphique avant tout usage réel.
+- **Ichimoku sur timeframe supérieur par défaut** (`UseHtfIchimoku` = true, 4H par défaut) : le nuage est calculé sur un timeframe plus haut que le graphique d'exécution (où tournent la structure/les entrées), pattern ICT classique "biais HTF + entrées LTF". Comme le calcul est fait à la main (voir point ci-dessus), cette lecture multi-timeframe est directe et fiable — pas besoin de dépendre d'un indicateur natif pour ça. Désactivable pour tout calculer sur le même graphique.
 - **Un seul setup Buy et un seul setup Sell suivis à la fois** (pas d'empilement de plusieurs zones en attente).
+- **Zone valable pour un seul contact par défaut** (`FirstTouchOnly` = true) : si le prix touche la zone sans bougie de rejet valide, elle est abandonnée plutôt que de rester active pour un retest ultérieur. Désactivable si vous préférez autoriser plusieurs tentatives sur la même zone.
 - **Créneaux horaires par défaut** : Londres 07h-10h UTC, New York 12h-15h UTC — ce sont les "killzones" ICT classiques, plus étroites que les sessions générales Londres/New York (08h-17h / 13h-22h UTC) utilisées dans VolumeProfileMtfBot. Réglables via les paramètres. **Pas d'ajustement automatique heure été/hiver** (UTC fixe).
 - **Order Block + FVG fusionnés en une seule zone** de surveillance, par simplicité, plutôt que deux zones avec des règles de priorité distinctes.
 - **Position sizing basé sur le risque** (comme GoldTrendBot) : volume calculé à partir d'un % du capital risqué et de la distance du stop loss, pas d'un % de notionnel.
@@ -44,7 +47,7 @@ La détection de structure/sweep/BOS tourne en continu (24h/24) ; seule l'**entr
 4. Copiez le contenu de [`IctSmcIchimokuBot.cs`](IctSmcIchimokuBot.cs) dans l'éditeur de code intégré
 5. Cliquez sur **Build** (le bouton marteau) — ça doit compiler sans erreur
 6. Glissez le cBot sur un graphique **5 ou 15 min** (les concepts ICT s'utilisent typiquement sur des timeframes courts à l'intérieur des créneaux horaires), réglez les paramètres
-7. Ajoutez l'indicateur **Ichimoku Kinko Hyo** natif de cTrader sur le même graphique pour comparer visuellement avec le calcul interne du bot avant de lui faire confiance
+7. Ajoutez l'indicateur **Ichimoku Kinko Hyo** natif de cTrader sur un graphique **au timeframe configuré dans `Timeframe Ichimoku`** (4H par défaut, pas le graphique d'exécution) pour comparer visuellement avec le calcul interne du bot avant de lui faire confiance
 8. Lancez d'abord en mode **backtest** sur une longue période, puis en **compte démo**
 
 ## Workflow avec Git / GitHub
@@ -56,9 +59,11 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Paramètre | Défaut | Rôle |
 |---|---|---|
 | Tenkan-sen / Kijun-sen / Senkou Span B (périodes) | 9 / 26 / 52 | Périodes Ichimoku classiques |
+| Ichimoku sur timeframe supérieur | true (4H) | Calcule le nuage sur un timeframe plus haut que le graphique d'exécution |
 | Exiger croisement Tenkan/Kijun | false | Filtre de biais plus strict (optionnel) |
 | Lookback structure (swing) | 3 | Bougies de part et d'autre pour confirmer un pivot |
 | Fenêtre de validité (barres) | 15 | Durée de vie d'un sweep en attente de BOS, ou d'une zone en attente de retracement |
+| Entrée au premier contact uniquement | true | Abandonne la zone si le premier contact ne donne pas de rejet valide |
 | Risque par trade (%) | 1.0 | % du capital risqué par trade |
 | Risk:Reward (R) | 2.0 | Take profit = distance du stop × ce multiple |
 | Buffer Stop Loss (pips) | 20 | Marge ajoutée au-delà de la zone pour le stop loss |

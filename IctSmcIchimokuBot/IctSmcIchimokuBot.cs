@@ -46,7 +46,15 @@ namespace cAlgo.Robots
     //     eviter toute ambiguite sur la convention interne de l'indicateur natif.
     //     A verifier visuellement sur un graphique avec l'indicateur Ichimoku
     //     cTrader avant usage reel.
+    //   - Par defaut, ce nuage Ichimoku est calcule sur un timeframe SUPERIEUR
+    //     (4H par defaut, via MarketData.GetBars) a celui du graphique d'execution
+    //     (structure/entrees ICT), pattern classique "biais HTF + entrees LTF".
+    //     Desactivable (UseHtfIchimoku=false) pour tout calculer sur le meme chart.
     //   - Un seul setup (Buy) et un seul setup (Sell) sont suivis a la fois.
+    //   - Une zone OB/FVG n'est valable que pour un seul contact par defaut
+    //     (FirstTouchOnly=true) : si le prix la touche sans bougie de rejet
+    //     valide, elle est abandonnee plutot que de rester active pour un 2e/3e
+    //     retest (un order block se "mitige" a chaque retest en theorie ICT).
     //   - Les creneaux horaires par defaut (Londres 07h-10h UTC, New York 12h-15h
     //     UTC) sont les "killzones" ICT classiques, plus etroites que les sessions
     //     de trading generales Londres/New York (08h-17h / 13h-22h UTC) utilisees
@@ -72,6 +80,13 @@ namespace cAlgo.Robots
             Description = "Filtre supplementaire plus strict : exige Tenkan > Kijun (achat) ou Tenkan < Kijun (vente) en plus de la position par rapport au nuage.")]
         public bool RequireTenkanKijunCross { get; set; }
 
+        [Parameter("Ichimoku sur timeframe superieur", Group = "Ichimoku", DefaultValue = true,
+            Description = "Calcule le biais Ichimoku sur un timeframe superieur a celui du graphique d'execution (pattern ICT classique : structure/entrees sur un timeframe bas, biais de tendance sur un timeframe haut).")]
+        public bool UseHtfIchimoku { get; set; }
+
+        [Parameter("Timeframe Ichimoku", Group = "Ichimoku", DefaultValue = "Hour4")]
+        public TimeFrame IchimokuTimeFrame { get; set; }
+
         // -- Structure (SMC/ICT) --
         [Parameter("Lookback structure (swing)", Group = "Structure", DefaultValue = 3, MinValue = 1, MaxValue = 10,
             Description = "Nombre de bougies de part et d'autre requises pour confirmer un swing high/low.")]
@@ -80,6 +95,10 @@ namespace cAlgo.Robots
         [Parameter("Fenetre de validite (barres)", Group = "Structure", DefaultValue = 15, MinValue = 3, MaxValue = 100,
             Description = "Nombre de barres pendant lesquelles un sweep en attente de BOS, ou une zone en attente de retracement, reste valide avant expiration.")]
         public int EntryWindowBars { get; set; }
+
+        [Parameter("Entree au premier contact uniquement", Group = "Structure", DefaultValue = true,
+            Description = "Un order block/FVG se 'mitige' a chaque retest en theorie ICT. Si active, la zone est abandonnee des le premier contact sans bougie de rejet valide, plutot que de rester active pour un 2e/3e retest.")]
+        public bool FirstTouchOnly { get; set; }
 
         // -- Gestion du risque --
         [Parameter("Risque par trade (%)", Group = "Risk Management", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10)]
@@ -170,10 +189,14 @@ namespace cAlgo.Robots
         private double _dayStartBalance;
         private bool _dailyLossLimitHit;
 
+        private Bars _ichimokuBars;
+
         protected override void OnStart()
         {
+            _ichimokuBars = UseHtfIchimoku && IchimokuTimeFrame != TimeFrame ? MarketData.GetBars(IchimokuTimeFrame, SymbolName) : Bars;
+
             Positions.Closed += OnPositionClosed;
-            Print("IctSmcIchimokuBot started on {0} {1}", SymbolName, TimeFrame);
+            Print("IctSmcIchimokuBot started on {0} {1} (Ichimoku sur {2})", SymbolName, TimeFrame, _ichimokuBars.TimeFrame);
         }
 
         protected override void OnBarClosed()
@@ -491,16 +514,18 @@ namespace cAlgo.Robots
             bullishBias = bearishBias = false;
 
             var required = Math.Max(SenkouSpanBPeriod, KijunPeriod) + KijunPeriod + 1;
-            if (Bars.ClosePrices.Count < required)
+            if (_ichimokuBars.ClosePrices.Count < required)
                 return false;
 
-            var tenkanAtShift = (HighestHigh(TenkanPeriod, KijunPeriod + 1) + LowestLow(TenkanPeriod, KijunPeriod + 1)) / 2.0;
-            var kijunAtShift = (HighestHigh(KijunPeriod, KijunPeriod + 1) + LowestLow(KijunPeriod, KijunPeriod + 1)) / 2.0;
+            var tenkanAtShift = (HighestHigh(_ichimokuBars, TenkanPeriod, KijunPeriod + 1) + LowestLow(_ichimokuBars, TenkanPeriod, KijunPeriod + 1)) / 2.0;
+            var kijunAtShift = (HighestHigh(_ichimokuBars, KijunPeriod, KijunPeriod + 1) + LowestLow(_ichimokuBars, KijunPeriod, KijunPeriod + 1)) / 2.0;
             var senkouA = (tenkanAtShift + kijunAtShift) / 2.0;
-            var senkouB = (HighestHigh(SenkouSpanBPeriod, KijunPeriod + 1) + LowestLow(SenkouSpanBPeriod, KijunPeriod + 1)) / 2.0;
+            var senkouB = (HighestHigh(_ichimokuBars, SenkouSpanBPeriod, KijunPeriod + 1) + LowestLow(_ichimokuBars, SenkouSpanBPeriod, KijunPeriod + 1)) / 2.0;
 
             var cloudTop = Math.Max(senkouA, senkouB);
             var cloudBottom = Math.Min(senkouA, senkouB);
+            // Prix du graphique d'execution compare au nuage calcule sur le
+            // timeframe Ichimoku (potentiellement superieur, voir UseHtfIchimoku).
             var close = Bars.ClosePrices.Last(1);
 
             bullishBias = close > cloudTop;
@@ -508,8 +533,8 @@ namespace cAlgo.Robots
 
             if (RequireTenkanKijunCross)
             {
-                var tenkanNow = (HighestHigh(TenkanPeriod) + LowestLow(TenkanPeriod)) / 2.0;
-                var kijunNow = (HighestHigh(KijunPeriod) + LowestLow(KijunPeriod)) / 2.0;
+                var tenkanNow = (HighestHigh(_ichimokuBars, TenkanPeriod) + LowestLow(_ichimokuBars, TenkanPeriod)) / 2.0;
+                var kijunNow = (HighestHigh(_ichimokuBars, KijunPeriod) + LowestLow(_ichimokuBars, KijunPeriod)) / 2.0;
                 bullishBias &= tenkanNow > kijunNow;
                 bearishBias &= tenkanNow < kijunNow;
             }
@@ -517,19 +542,19 @@ namespace cAlgo.Robots
             return true;
         }
 
-        private double HighestHigh(int period, int shift = 1)
+        private static double HighestHigh(Bars source, int period, int shift = 1)
         {
             var max = double.MinValue;
             for (var i = shift; i < shift + period; i++)
-                max = Math.Max(max, Bars.HighPrices.Last(i));
+                max = Math.Max(max, source.HighPrices.Last(i));
             return max;
         }
 
-        private double LowestLow(int period, int shift = 1)
+        private static double LowestLow(Bars source, int period, int shift = 1)
         {
             var min = double.MaxValue;
             for (var i = shift; i < shift + period; i++)
-                min = Math.Min(min, Bars.LowPrices.Last(i));
+                min = Math.Min(min, source.LowPrices.Last(i));
             return min;
         }
 
@@ -560,11 +585,24 @@ namespace cAlgo.Robots
                         var open = Bars.OpenPrices.Last(1);
                         var overlap = low <= _pendingBuySetup.ZoneHigh && high >= _pendingBuySetup.ZoneLow;
 
-                        if (overlap && close > open && bullishBias)
+                        if (overlap)
                         {
-                            ExecuteEntry(TradeType.Buy, _pendingBuySetup.ZoneLow, "Retracement OB/FVG haussier");
-                            _pendingBuySetup.Active = false;
-                            return;
+                            var validRejection = close > open;
+
+                            if (validRejection && bullishBias)
+                            {
+                                ExecuteEntry(TradeType.Buy, _pendingBuySetup.ZoneLow, "Retracement OB/FVG haussier");
+                                _pendingBuySetup.Active = false;
+                                return;
+                            }
+
+                            // Contact sans bougie de rejet valide : zone "mitigee",
+                            // on l'abandonne plutot que d'attendre un 2e/3e retest.
+                            // Une bougie de rejet correcte mais un biais Ichimoku pas
+                            // encore aligne laisse la zone active (ce n'est pas la
+                            // reaction de prix qui est en cause).
+                            if (FirstTouchOnly && !validRejection)
+                                _pendingBuySetup.Active = false;
                         }
                     }
                 }
@@ -590,10 +628,19 @@ namespace cAlgo.Robots
                         var open = Bars.OpenPrices.Last(1);
                         var overlap = low <= _pendingSellSetup.ZoneHigh && high >= _pendingSellSetup.ZoneLow;
 
-                        if (overlap && close < open && bearishBias)
+                        if (overlap)
                         {
-                            ExecuteEntry(TradeType.Sell, _pendingSellSetup.ZoneHigh, "Retracement OB/FVG baissier");
-                            _pendingSellSetup.Active = false;
+                            var validRejection = close < open;
+
+                            if (validRejection && bearishBias)
+                            {
+                                ExecuteEntry(TradeType.Sell, _pendingSellSetup.ZoneHigh, "Retracement OB/FVG baissier");
+                                _pendingSellSetup.Active = false;
+                            }
+                            else if (FirstTouchOnly && !validRejection)
+                            {
+                                _pendingSellSetup.Active = false;
+                            }
                         }
                     }
                 }
