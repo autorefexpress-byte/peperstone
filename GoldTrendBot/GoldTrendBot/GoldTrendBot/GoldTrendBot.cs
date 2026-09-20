@@ -171,7 +171,7 @@ namespace cAlgo.Robots
                 Print("Order failed: {0}", result.Error);
         }
 
-        private long CalculatePositionVolume(double stopLossPips)
+        private double CalculatePositionVolume(double stopLossPips)
         {
             var riskAmount = Account.Balance * (RiskPercent / 100.0);
 
@@ -186,7 +186,7 @@ namespace cAlgo.Robots
             if (normalized > Symbol.VolumeInUnitsMax)
                 normalized = Symbol.VolumeInUnitsMax;
 
-            return (long)normalized;
+            return normalized;
         }
 
         private void ManageTrailingStop()

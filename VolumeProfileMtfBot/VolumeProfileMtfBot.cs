@@ -328,7 +328,7 @@ namespace cAlgo.Robots
             }
         }
 
-        private long CalculatePositionVolume()
+        private double CalculatePositionVolume()
         {
             var notional = Account.Equity * (PositionSizePercent / 100.0);
             var rawVolume = notional / Symbol.Bid;
@@ -340,7 +340,7 @@ namespace cAlgo.Robots
             if (normalized > Symbol.VolumeInUnitsMax)
                 normalized = Symbol.VolumeInUnitsMax;
 
-            return (long)normalized;
+            return normalized;
         }
 
         private bool HasOpenPosition()
