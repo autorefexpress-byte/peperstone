@@ -39,7 +39,7 @@ Le bot tourne sur `OnTick` (pas seulement à la clôture de bougie) car la grill
 
 - **Panier unique combiné** plutôt qu'un panier par côté : plus cohérent pour un mode `Both` (grille couverte des deux côtés), où un PnL net global a plus de sens que deux paniers séparés.
 - **TP panier (pips vs VWAP)** utilise le côté net dominant (plus de volume Buy que Sell, ou l'inverse) pour définir le sens de la distance ; si le panier est exactement équilibré, ce déclencheur est ignoré ce tick-là.
-- **Marge libre après ordre** : estimation approximative (notionnel ÷ levier du compte), sans tenir compte d'éventuelles conversions de devises.
+- **Niveau de marge min après ordre** : utilise la convention standard "niveau de marge" (Equity ÷ Marge utilisée × 100, la même qu'affichée par cTrader), pas un % de l'equity directement — 100-200% sont des valeurs typiques. Estimation de la marge requise approximative (notionnel ÷ levier du compte), sans tenir compte d'éventuelles conversions de devises.
 - **Presets** : ne remplacent que les paramètres qui définissent la "forme du risque" (espacement, niveaux, multiplicateur de volume, TP/SL par niveau, drawdown flottant, max drawdown) — pas les montants en devise du panier (TP/coupe en $), qui dépendent trop de la taille du compte pour être préréglés utilement.
 
 ## Installation dans cTrader
@@ -76,7 +76,7 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Perte journaliere max (%) | 5.0 | Basee sur le PnL realise |
 | Max Drawdown capital initial (%) | 20.0 | Arret permanent du bot |
 | Drawdown flottant max (%) | 10.0 | Ferme tout, la grille peut se reconstruire |
-| Marge libre min apres ordre (%) | 100.0 | Bloque un ordre si la marge deviendrait trop tendue |
+| Niveau de marge min apres ordre (%) | 100.0 | Bloque un ordre si le niveau de marge projete (Equity/Marge utilisee) tomberait sous ce seuil |
 | Max Spread (pips) | 50 | 0 = desactive |
 
 ### Valeurs des presets

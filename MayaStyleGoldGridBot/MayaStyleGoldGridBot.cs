@@ -192,8 +192,8 @@ namespace cAlgo.Robots
             Description = "Mesure de Balance a Equity (pertes latentes). Au-dela, fermeture complete mais le bot peut reconstruire une nouvelle grille ensuite. 0 = desactive.")]
         public double FloatingDrawdownLimitPercent { get; set; }
 
-        [Parameter("Marge libre min apres ordre (%)", Group = "Risk Management", DefaultValue = 100.0, MinValue = 0,
-            Description = "Empeche un nouvel ordre si la marge libre restante estimee apres son execution tomberait sous ce % de l'equity. Estimation approximative (notionnel / levier du compte).")]
+        [Parameter("Niveau de marge min apres ordre (%)", Group = "Risk Management", DefaultValue = 100.0, MinValue = 0,
+            Description = "Empeche un nouvel ordre si le niveau de marge projete apres son execution (Equity / Marge utilisee x 100, la meme convention qu'affichee par cTrader) tomberait sous ce seuil. 100-200% sont des valeurs typiques. Estimation approximative (notionnel / levier du compte).")]
         public double MinFreeMarginAfterOrderPercent { get; set; }
 
         // -- Risk Management Pro --
@@ -563,6 +563,13 @@ namespace cAlgo.Robots
             return normalized;
         }
 
+        // Utilise la convention standard "niveau de marge" (Equity / Marge
+        // utilisee x 100), la meme que celle affichee par cTrader et la plupart
+        // des brokers, ou 100-200% sont des seuils courants. Une version
+        // precedente comparait la marge libre restante a un % de l'equity
+        // directement, ce qui rendait le seuil quasi impossible a satisfaire des
+        // qu'un ordre consommait la moindre marge (aucune position n'etait
+        // jamais ouverte, meme avec les reglages par defaut).
         private bool HasEnoughFreeMargin(double volumeUnits)
         {
             if (volumeUnits <= 0 || MinFreeMarginAfterOrderPercent <= 0)
@@ -572,10 +579,15 @@ namespace cAlgo.Robots
             // compte. Ne tient pas compte des conversions de devises eventuelles.
             var notional = volumeUnits * Symbol.Bid;
             var estimatedMargin = Account.Leverage > 0 ? notional / Account.Leverage : notional;
-            var remainingMargin = Account.FreeMargin - estimatedMargin;
-            var requiredBuffer = Account.Equity * (MinFreeMarginAfterOrderPercent / 100.0);
 
-            return remainingMargin >= requiredBuffer;
+            var currentUsedMargin = Account.Equity - Account.FreeMargin;
+            var projectedUsedMargin = currentUsedMargin + estimatedMargin;
+
+            if (projectedUsedMargin <= 0)
+                return true;
+
+            var projectedMarginLevel = Account.Equity / projectedUsedMargin * 100.0;
+            return projectedMarginLevel >= MinFreeMarginAfterOrderPercent;
         }
 
         private double GetGridStepPips()
