@@ -21,14 +21,15 @@ Contrairement à une première ébauche de ce bot, **chaque position (seed et ni
 ## Logique de la stratégie
 
 1. **Seed** : quand le bot est complètement à plat (aucune position, aucun ordre en attente), il ouvre un trade au marché dans `Direction du seed` (Buy/Sell/Auto via une EMA longue) — ce prix d'entrée devient l'**ancre** de la grille
-2. **Grille d'ordres limites** : autour de l'ancre, le bot place des ordres limites espacés de `Multiplicateur ATR × ATR courant`, jusqu'à `Niveaux par côté`, du côté (ou des deux côtés) défini par `Cote de la grille`
+2. **Grille d'ordres limites** : autour de l'ancre, le bot place des ordres limites espacés de `Multiplicateur ATR × ATR courant`, jusqu'à `Niveaux par côté`, du côté (ou des deux côtés) défini par `Cote de la grille`. En mode `Both`, les niveaux sont placés en alternant les côtés (Buy L0, Sell L0, Buy L1…), pour qu'un `Volume total max` serré ne soit pas entièrement pris par le côté Buy
 3. **SL/TP par niveau** : chaque position (seed compris) a son propre stop loss et take profit en pips — un niveau peut donc se fermer tout seul, indépendamment du panier
-4. **Reconstruction automatique** : si `Reconstruire les ordres manquants` est actif, tout niveau vidé (stoppé, pris en profit, ou annulé) est immédiatement remplacé par un nouvel ordre limite à la même position de grille
+4. **Reconstruction automatique** : si `Reconstruire les ordres manquants` est actif, tout niveau vidé (stoppé, pris en profit, ou annulé) est remplacé par un nouvel ordre limite à la même position de grille, après le `Delai avant reconstruction` (évite les rafales de SL répétés au même prix pendant un mouvement rapide)
+   - **Recentrage** : si aucune position n'est ouverte et que le prix s'est éloigné de l'ancre de plus de `Recentrer la grille apres` espacements, les ordres en attente sont annulés et un nouveau seed repart du prix courant (sans cela, le bot pouvait rester des semaines sans trader avec des ordres hors de portée)
 5. **Panier unique** : toutes les positions du bot (seed + tous les niveaux, tous côtés confondus) forment **un seul panier** suivi par PnL cumulé
    - **TP panier (montant)** : ferme tout dès que le profit net cumulé atteint ce montant
    - **TP panier (pips vs VWAP)** : ferme tout quand le prix s'éloigne suffisamment du prix moyen pondéré par le volume, calculé côté net dominant (non applicable si le panier est parfaitement équilibré)
    - **Coupe panier (montant)** : ferme tout si la perte nette cumulée atteint ce montant (protection)
-6. **Garde-fous de risque** : limite de trades par jour/session (avec mode "garder" ou "annuler" les ordres en attente restants), perte journalière réalisée max (%), Max Drawdown depuis le capital initial (%, arrêt **permanent** du bot), drawdown flottant max (%, ferme tout mais la grille peut se reconstruire), marge libre minimale après chaque ordre
+6. **Garde-fous de risque** : limite de trades par jour/session (avec mode "garder" ou "annuler" les ordres en attente restants), perte journalière réalisée max (%, qui ferme aussi les positions ouvertes et les ordres en attente si `Tout fermer a la perte journaliere max` est actif), Max Drawdown depuis le capital initial (%, arrêt **permanent** du bot), drawdown flottant max (%, ferme tout mais la grille peut se reconstruire), marge libre minimale après chaque ordre
 7. **Time-stop optionnel** : ferme une position en perte depuis trop longtemps, indépendamment de son SL
 8. **Filtre de spread avec hystérésis** : bloque les nouveaux ordres (et optionnellement annule les ordres en attente) si le spread est trop large, avec une marge de récupération pour éviter les allers-retours
 9. **Session** : fenêtre horaire optionnelle avec 4 actions de sortie possibles (tout fermer / annuler les ordres en attente seulement / fermer si profit net positif / fermer si profit brut positif), plus une clôture de fin de journée indépendante
@@ -66,6 +67,8 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Multiplicateur ATR | 1.5 | Espacement = ATR × ce multiple |
 | TP / SL par niveau (pips) | 150 / 300 | Sur chaque position individuellement |
 | Niveaux par cote | 5 | Plafond du nombre de niveaux |
+| Delai avant reconstruction (minutes) | 15 | 0 = reconstruction immediate |
+| Recentrer la grille apres (espacements) | 3 | 0 = desactive |
 | Volume de base (lots) | 0.01 | Taille du seed et du niveau 0 |
 | Multiplicateur de volume par niveau | 1.0 | 1.0 = constant, >1.0 = martingale |
 | Volume total max (lots) | 1.0 | Plafond dur d'exposition |
@@ -74,6 +77,7 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Coupe panier (montant) | 50.0 | Ferme tout en perte (protection) |
 | Limite de trades journaliere | 20 | Par session ou par jour UTC |
 | Perte journaliere max (%) | 5.0 | Basee sur le PnL realise |
+| Tout fermer a la perte journaliere max | Oui | Ferme aussi positions et ordres en attente |
 | Max Drawdown capital initial (%) | 20.0 | Arret permanent du bot |
 | Drawdown flottant max (%) | 10.0 | Ferme tout, la grille peut se reconstruire |
 | Niveau de marge min apres ordre (%) | 100.0 | Bloque un ordre si le niveau de marge projete (Equity/Marge utilisee) tomberait sous ce seuil |

@@ -126,6 +126,14 @@ namespace cAlgo.Robots
             Description = "Replace automatiquement un niveau ferme (SL/TP touche) ou un ordre en attente annule par un nouvel ordre a la meme position de grille.")]
         public bool RebuildMissingOrders { get; set; }
 
+        [Parameter("Delai avant reconstruction (minutes, 0=off)", Group = "Grid Core", DefaultValue = 15, MinValue = 0,
+            Description = "Attente minimale apres la fermeture d'un niveau avant de le replacer au meme prix. Evite les rafales de SL/TP repetes sur un niveau pendant un mouvement rapide.")]
+        public int RebuildCooldownMinutes { get; set; }
+
+        [Parameter("Recentrer la grille apres (espacements, 0=off)", Group = "Grid Core", DefaultValue = 3, MinValue = 0, Step = 0.5,
+            Description = "Quand aucune position n'est ouverte et que le prix s'est eloigne de l'ancre de plus de ce nombre d'espacements, les ordres en attente sont annules et un nouveau seed repart du prix courant. Evite que le bot reste bloque des jours avec des ordres hors de portee.")]
+        public double ResetGridDistanceSteps { get; set; }
+
         [Parameter("Cote de la grille", Group = "Grid Core", DefaultValue = GridSideMode.BuyOnly,
             Description = "Both: buy limits sous l'ancre + sell limits au-dessus (double l'exposition). BuyOnly/SellOnly: un seul cote.")]
         public GridSideMode GridSide { get; set; }
@@ -184,6 +192,10 @@ namespace cAlgo.Robots
             Description = "Perte REALISEE (positions cloturees) cumulee dans la journee, en % du solde de debut de journee. 0 = desactive.")]
         public double DailyLossLimitPercent { get; set; }
 
+        [Parameter("Tout fermer a la perte journaliere max", Group = "Risk Management", DefaultValue = true,
+            Description = "Oui : des que la perte journaliere max est atteinte, ferme aussi les positions ouvertes et annule les ordres en attente, pour que la perte du jour ne depasse pas la limite. Non : bloque seulement les nouveaux ordres.")]
+        public bool FlattenOnDailyLossLimit { get; set; }
+
         [Parameter("Max Drawdown depuis capital initial (%)", Group = "Risk Management", DefaultValue = 20.0, MinValue = 0, MaxValue = 90, Step = 1,
             Description = "Protection compte dure et PERMANENTE : au-dela, fermeture complete et arret definitif du bot (redemarrage manuel requis). Mesuree depuis l'equity au demarrage du bot. 0 = desactive.")]
         public double MaxDrawdownStartEquityPercent { get; set; }
@@ -231,6 +243,9 @@ namespace cAlgo.Robots
         // initiale de grille (toujours tentee) ; s'il y est deja, un niveau vide
         // est un trou a reconstruire (soumis a RebuildMissingOrders).
         private readonly HashSet<string> _levelsEverPlaced = new HashSet<string>();
+
+        // Heure de fermeture de chaque niveau, pour le delai avant reconstruction.
+        private readonly Dictionary<string, DateTime> _levelClosedAtUtc = new Dictionary<string, DateTime>();
 
         private DateTime _currentDay = DateTime.MinValue;
         private double _dayStartBalance;
@@ -348,13 +363,42 @@ namespace cAlgo.Robots
 
             var spreadBlocked = IsSpreadBlocked();
 
+            CheckStaleGrid();
+
             if (!HasAnyActivity())
                 TrySeed(spreadBlocked);
             else if (_gridAnchor.HasValue)
+                ManageGrid(spreadBlocked);
+        }
+
+        // Sans cela, une grille dont il ne reste que des ordres en attente loin
+        // du prix (le marche est parti dans l'autre sens) bloque le bot : il
+        // n'est pas "a plat" donc ne re-seed pas, et les ordres restants
+        // occupent tout le Volume total max. Constate en backtest : aucun trade
+        // pendant plus de deux mois.
+        private void CheckStaleGrid()
+        {
+            if (ResetGridDistanceSteps <= 0 || !_gridAnchor.HasValue)
+                return;
+
+            foreach (var p in Positions)
             {
-                ManageGridSide(TradeType.Buy, spreadBlocked);
-                ManageGridSide(TradeType.Sell, spreadBlocked);
+                if (IsOwned(p))
+                    return;
             }
+
+            var stepPips = GetGridStepPips();
+            if (stepPips <= 0)
+                return;
+
+            var mid = (Symbol.Bid + Symbol.Ask) / 2.0;
+            var distanceSteps = Math.Abs(mid - _gridAnchor.Value) / (stepPips * Symbol.PipSize);
+            if (distanceSteps < ResetGridDistanceSteps)
+                return;
+
+            Print("Prix eloigne de l'ancre ({0:0.0} espacements >= {1:0.0}) sans position ouverte : ordres en attente annules, la grille repartira du prix courant.",
+                distanceSteps, ResetGridDistanceSteps);
+            FlattenAll();
         }
 
         // -- Seed ---------------------------------------------------------------
@@ -404,20 +448,17 @@ namespace cAlgo.Robots
 
         // -- Grille d'ordres limites ---------------------------------------------
 
-        private void ManageGridSide(TradeType side, bool spreadBlocked)
+        // Les niveaux sont places en alternant les cotes (Buy L0, Sell L0,
+        // Buy L1...) plutot que tout le cote Buy d'abord : avec un Volume total
+        // max serre, l'ancienne boucle par cote remplissait le plafond avec des
+        // Buy uniquement et le mode Both n'avait jamais de Sell.
+        private void ManageGrid(bool spreadBlocked)
         {
-            if (GridSide == GridSideMode.BuyOnly && side == TradeType.Sell)
-                return;
-
-            if (GridSide == GridSideMode.SellOnly && side == TradeType.Buy)
-                return;
-
             var stepPips = GetGridStepPips();
             if (stepPips <= 0)
                 return;
 
             var step = stepPips * Symbol.PipSize;
-            var sideName = side == TradeType.Buy ? "BUY" : "SELL";
             var levels = EffectiveLevelsPerSide();
 
             // Calcule le volume total une seule fois puis l'incremente localement
@@ -427,31 +468,50 @@ namespace cAlgo.Robots
 
             for (var level = 0; level < levels; level++)
             {
-                var levelLabel = Label + "_" + sideName + "_L" + level;
-                if (HasLevelActivity(levelLabel))
-                    continue;
+                foreach (var side in new[] { TradeType.Buy, TradeType.Sell })
+                {
+                    if (GridSide == GridSideMode.BuyOnly && side == TradeType.Sell)
+                        continue;
 
-                // Construction initiale (niveau jamais place pour cette ancre) :
-                // toujours tentee. Niveau deja place puis vide (SL/TP/annulation) :
-                // seulement reconstruit si RebuildMissingOrders est actif.
-                var isInitialPlacement = !_levelsEverPlaced.Contains(levelLabel);
-                if (!isInitialPlacement && !RebuildMissingOrders)
-                    continue;
+                    if (GridSide == GridSideMode.SellOnly && side == TradeType.Buy)
+                        continue;
 
-                if (_dailyLossLimitHit || _dailyTradeCapReached || _hardStopped || spreadBlocked)
-                    continue;
+                    var sideName = side == TradeType.Buy ? "BUY" : "SELL";
+                    var levelLabel = Label + "_" + sideName + "_L" + level;
+                    if (HasLevelActivity(levelLabel))
+                        continue;
 
-                var nextVolumeLots = BaseVolume * Math.Pow(EffectiveVolumeMultiplier(), level);
-                if (currentTotalLots + nextVolumeLots > MaxTotalVolume)
-                    continue;
+                    // Construction initiale (niveau jamais place pour cette ancre) :
+                    // toujours tentee. Niveau deja place puis vide (SL/TP/annulation) :
+                    // seulement reconstruit si RebuildMissingOrders est actif, et
+                    // apres le delai de reconstruction.
+                    var isInitialPlacement = !_levelsEverPlaced.Contains(levelLabel);
+                    if (!isInitialPlacement && (!RebuildMissingOrders || IsInRebuildCooldown(levelLabel)))
+                        continue;
 
-                var levelPrice = side == TradeType.Buy
-                    ? _gridAnchor.Value - step * (level + 1)
-                    : _gridAnchor.Value + step * (level + 1);
+                    if (_dailyLossLimitHit || _dailyTradeCapReached || _hardStopped || spreadBlocked)
+                        continue;
 
-                if (PlacePendingLevel(side, levelLabel, levelPrice, level))
-                    currentTotalLots += nextVolumeLots;
+                    var nextVolumeLots = BaseVolume * Math.Pow(EffectiveVolumeMultiplier(), level);
+                    if (currentTotalLots + nextVolumeLots > MaxTotalVolume)
+                        continue;
+
+                    var levelPrice = side == TradeType.Buy
+                        ? _gridAnchor.Value - step * (level + 1)
+                        : _gridAnchor.Value + step * (level + 1);
+
+                    if (PlacePendingLevel(side, levelLabel, levelPrice, level))
+                        currentTotalLots += nextVolumeLots;
+                }
             }
+        }
+
+        private bool IsInRebuildCooldown(string levelLabel)
+        {
+            if (RebuildCooldownMinutes <= 0 || !_levelClosedAtUtc.TryGetValue(levelLabel, out var closedAt))
+                return false;
+
+            return (Server.TimeInUtc - closedAt).TotalMinutes < RebuildCooldownMinutes;
         }
 
         private bool PlacePendingLevel(TradeType side, string levelLabel, double price, int level)
@@ -731,6 +791,7 @@ namespace cAlgo.Robots
 
             _gridAnchor = null;
             _levelsEverPlaced.Clear();
+            _levelClosedAtUtc.Clear();
         }
 
         private void ClosePositions()
@@ -870,7 +931,7 @@ namespace cAlgo.Robots
         private void RegisterTradeOpened()
         {
             _tradesOpenedToday++;
-            if (_tradesOpenedToday < MaxTradesPerDay)
+            if (_tradesOpenedToday < MaxTradesPerDay || _dailyTradeCapReached)
                 return;
 
             _dailyTradeCapReached = true;
@@ -999,6 +1060,9 @@ namespace cAlgo.Robots
 
             _dailyRealizedPnl += position.NetProfit;
 
+            if (position.Label != Label + "_SEED")
+                _levelClosedAtUtc[position.Label] = Server.TimeInUtc;
+
             Print("Position fermee ({0}, {1}). Net: {2:0.00} {3}.", position.Label, position.TradeType, position.NetProfit, Account.Asset.Name);
 
             if (_dailyLossLimitHit || DailyLossLimitPercent <= 0 || _dayStartBalance <= 0 || _dailyRealizedPnl >= 0)
@@ -1009,6 +1073,14 @@ namespace cAlgo.Robots
             {
                 _dailyLossLimitHit = true;
                 Print("Limite de perte journaliere (cloturee) atteinte: {0:0.0}% >= {1:0.0}%.", lossPercent, DailyLossLimitPercent);
+
+                // Sinon les positions deja ouvertes continuent et la perte du
+                // jour depasse la limite (vu en backtest : -12% pour 5%).
+                if (FlattenOnDailyLossLimit)
+                {
+                    Print("Fermeture complete (perte journaliere max).");
+                    FlattenAll();
+                }
             }
         }
 
