@@ -91,7 +91,19 @@ Le stop étant en multiple d'ATR, son coût en euros dépend du timeframe. En H1
 | Max Risk at Min Volume (%) | 3.0 (≈ 6 € max par trade) |
 | Max Spread (pips) | 15 |
 
-Ce bot n'a ni limite de perte journalière ni arrêt d'urgence : une seule position à la fois, donc au plus ≈ 6 € de perte par trade, mais c'est à vous d'arrêter le bot si le compte passe sous votre plancher (ex. 160 €).
+Une seule position à la fois, donc au plus ≈ 6 € de perte par trade. En dehors du cycle hebdomadaire ci-dessous, il n'y a pas d'arrêt d'urgence global.
+
+## Cycle de 5 jours (lundi → vendredi)
+
+Avec `Weekly Cycle (Mon-Fri)` activé (par défaut), chaque semaine est traitée comme une course séparée :
+
+- Lundi 00h UTC : nouveau solde de départ de la semaine (ligne `New week … starting balance …`).
+- **Objectif hebdo** (`Weekly Profit Target`, 10 %) : tout est fermé et le bot ne trade plus jusqu'à lundi.
+- **Perte max hebdo** (`Weekly Max Loss`, 10 %) : pareil, la semaine s'arrête là.
+- Pas de nouvelle entrée le vendredi après 16h UTC, ni le week-end ; positions fermées le vendredi à 20h UTC (pas de gap du week-end).
+- À chaque changement de semaine (et à l'arrêt du bot) : ligne `WEEK SUMMARY … result … trades …`.
+
+Pour juger la stratégie, lancez un backtest de plusieurs mois : chaque semaine y est indépendante, et les lignes `WEEK SUMMARY` donnent directement combien de semaines sont gagnantes ou perdantes.
 
 ## Prochaines étapes possibles
 
