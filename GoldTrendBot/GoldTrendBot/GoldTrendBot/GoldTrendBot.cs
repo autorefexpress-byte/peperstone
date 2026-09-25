@@ -94,6 +94,8 @@ namespace cAlgo.Robots
             // Smoothed average of the ATR itself, used as the volatility filter baseline.
             _atrAverage = Indicators.MovingAverage(_atr.Result, AtrAveragePeriod, MovingAverageType.Simple);
 
+            Positions.Closed += OnPositionClosed;
+
             Print("GoldTrendBot started on {0} {1}", SymbolName, TimeFrame);
         }
 
@@ -148,6 +150,18 @@ namespace cAlgo.Robots
                 TryEnter(TradeType.Buy, atrLast);
             else if (bearishCross)
                 TryEnter(TradeType.Sell, atrLast);
+        }
+
+        // Logs each closed trade's result so a backtest log can be analysed
+        // on its own, without the cTrader results tab.
+        private void OnPositionClosed(PositionClosedEventArgs args)
+        {
+            var position = args.Position;
+            if (position.Label != Label || position.SymbolName != SymbolName)
+                return;
+
+            Print("Position closed ({0}, {1}). Net: {2:0.00} {3}. Balance: {4:0.00}.",
+                position.TradeType, args.Reason, position.NetProfit, Account.Asset.Name, Account.Balance);
         }
 
         private void TryEnter(TradeType tradeType, double atrValue)
