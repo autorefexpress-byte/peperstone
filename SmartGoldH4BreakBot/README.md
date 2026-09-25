@@ -57,6 +57,8 @@ C'est une implémentation personnelle écrite à partir d'une description de str
 | Break-even à (R) / trailing à partir de (R) | 1,0 / 1,5 | Gestion de la position |
 | Risque par trade (%) | 1,0 | Taille de position basée sur le risque |
 | Risque max au volume minimum (%) | 3,0 | Plafond de risque réel sur petit compte |
+| Réduire le stop pour petit compte | Oui | Raccourcit le stop jusqu'au plafond au lieu d'ignorer l'entrée |
+| Stop réduit min (x ATR 1H) | 0,4 | Distance minimale du stop raccourci |
 | Perte journalière max (%) | 5 | Coupe-circuit du jour |
 | Drawdown max (%) | 20 | Arrêt complet du bot |
 | Pause après une perte (heures) | 24 | Anti sur-trading |
@@ -68,4 +70,6 @@ C'est une implémentation personnelle écrite à partir d'une description de str
 - `BOS … rejeté : …` : cassure refusée, avec la raison (volume, ADR, bougie étirée…).
 - `Setup abandonné : …` : fausse cassure ou expiration.
 - `Volume minimum = X % de risque …, entrée ignorée` : stop trop large pour la taille du compte.
+- `Stop réduit de X à Y pips…` : stop raccourci pour respecter le plafond de risque (petit compte).
 - `Position closed (…). Net: … Balance: …` : résultat de chaque trade.
+- `===== Résumé =====` (à la fin du backtest) : combien de cassures détectées, rejetées par chaque filtre, setups expirés, entrées ignorées et pourquoi. C'est la première chose à regarder si le bot ne trade pas.

@@ -161,6 +161,14 @@ namespace cAlgo.Robots
         [Parameter("Risque max au volume minimum (%)", Group = "Risque", DefaultValue = 3.0, MinValue = 0.1, MaxValue = 20)]
         public double MaxRiskAtMinVolumePercent { get; set; }
 
+        [Parameter("Reduire le stop pour petit compte", Group = "Risque", DefaultValue = true,
+            Description = "Si le stop 1H risque plus que le plafond au volume minimum, le raccourcir jusqu'au plafond au lieu d'ignorer l'entree.")]
+        public bool AdaptStopToSmallAccount { get; set; }
+
+        [Parameter("Stop reduit min (x ATR 1H)", Group = "Risque", DefaultValue = 0.4, MinValue = 0.1,
+            Description = "Le stop raccourci ne descend jamais sous cette distance ; en dessous, l'entree est ignoree.")]
+        public double AdaptedStopMinAtr { get; set; }
+
         // --- Protections ---
         [Parameter("Perte journaliere max (%)", Group = "Protections", DefaultValue = 5.0, MinValue = 0,
             Description = "Plus de nouvelle entree le reste de la journee (UTC). 0 = desactive.")]
@@ -210,6 +218,12 @@ namespace cAlgo.Robots
         }
 
         private readonly Setup _setup = new Setup();
+
+        // Compteurs affiches a l'arret du bot, pour comprendre en backtest
+        // pourquoi il trade (ou ne trade pas).
+        private int _statBos, _statBosRejected, _statRejTrend, _statRejCandle, _statRejClose, _statRejVolume, _statRejAdr;
+        private int _statExpired, _statInvalidated, _statSkipRisk, _statSkipCooldown, _statSkipWeekly, _statSkipFriday,
+            _statSkipDaily, _statSkipSpread, _statStopReduced, _statTrades;
         private DateTime _lastUsedBuySwing = DateTime.MinValue;
         private DateTime _lastUsedSellSwing = DateTime.MinValue;
 
@@ -242,11 +256,25 @@ namespace cAlgo.Robots
             Print("SmartGoldH4BreakBot started on {0} {1}. Direction: {2}, entree: {3}.", SymbolName, TimeFrame, Direction, EntryMode);
             Print("Symbol info: PipSize {0}, pip value per unit {1}, min volume {2} units.",
                 Symbol.PipSize, PipValuePerUnit(), Symbol.VolumeInUnitsMin);
+            Print("Historique charge : {0} bougies 4H, {1} bougies 1H, {2} jours (il faut au moins {3} bougies 4H avant la premiere analyse).",
+                _h4Bars.Count, _h1Bars.Count, _d1Bars.Count, Math.Max(Math.Max(StructureLookback, TrendEmaPeriod), VolumeAveragePeriod) + SwingStrength * 2 + 3);
         }
 
         protected override void OnTick()
         {
             CheckMaxDrawdown();
+        }
+
+        protected override void OnStop()
+        {
+            Print("===== Resume SmartGoldH4BreakBot =====");
+            Print("Cassures 4H (BOS) detectees : {0}, rejetees : {1}, setups valides : {2}.", _statBos, _statBosRejected, _statBos - _statBosRejected);
+            Print("Rejets par filtre (un BOS peut en cumuler plusieurs) : tendance EMA {0}, bougie etiree {1}, cloture faible {2}, pas de pic de volume {3}, ADR {4}.",
+                _statRejTrend, _statRejCandle, _statRejClose, _statRejVolume, _statRejAdr);
+            Print("Setups : expires sans retest {0}, fausses cassures {1}.", _statExpired, _statInvalidated);
+            Print("Entrees ignorees : risque trop grand {0}, pause apres perte {1}, max semaine {2}, vendredi soir {3}, perte du jour {4}, spread {5}.",
+                _statSkipRisk, _statSkipCooldown, _statSkipWeekly, _statSkipFriday, _statSkipDaily, _statSkipSpread);
+            Print("Stops reduits pour petit compte : {0}. Trades ouverts : {1}.", _statStopReduced, _statTrades);
         }
 
         // ------------------------------------------------------------------
@@ -301,25 +329,35 @@ namespace cAlgo.Robots
                     return false;
             }
 
+            _statBos++;
             var reasons = "";
 
             if (UseTrendFilter)
             {
                 var ema = _emaH4.Result[c];
                 if (isBuy ? close <= ema : close >= ema)
+                {
                     reasons += " tendance EMA contraire;";
+                    _statRejTrend++;
+                }
             }
 
             var range = high - low;
             var atr = _atrH4.Result[c];
             if (atr > 0 && range > MaxBreakoutCandleAtr * atr)
+            {
                 reasons += string.Format(" bougie trop etiree ({0:0.0} ATR);", range / atr);
+                _statRejCandle++;
+            }
 
             if (range > 0)
             {
                 var strength = isBuy ? (close - low) / range : (high - close) / range;
                 if (strength * 100.0 < MinCloseStrengthPercent)
+                {
                     reasons += string.Format(" cloture faible ({0:0} %);", strength * 100.0);
+                    _statRejClose++;
+                }
             }
 
             if (UseVolumeFilter)
@@ -327,7 +365,10 @@ namespace cAlgo.Robots
                 var avg = AverageTickVolume(c);
                 var vol = _h4Bars.TickVolumes[c];
                 if (avg > 0 && vol < VolumeSpikeMultiplier * avg)
+                {
                     reasons += string.Format(" pas de pic de volume ({0:0.00}x);", vol / avg);
+                    _statRejVolume++;
+                }
             }
 
             if (UseAdrFilter)
@@ -335,11 +376,15 @@ namespace cAlgo.Robots
                 var adr = AverageDailyRange();
                 var todayRange = _d1Bars.HighPrices.LastValue - _d1Bars.LowPrices.LastValue;
                 if (adr > 0 && todayRange / adr * 100.0 > MaxAdrUsedPercent)
+                {
                     reasons += string.Format(" ADR deja consomme ({0:0} %);", todayRange / adr * 100.0);
+                    _statRejAdr++;
+                }
             }
 
             if (reasons.Length > 0)
             {
+                _statBosRejected++;
                 Print("BOS {0} a {1} rejete :{2}", isBuy ? "haussier" : "baissier", Math.Round(level, Symbol.Digits), reasons);
                 // On marque le niveau comme utilise : une cassure rejetee ne
                 // sera pas reprise plus tard sur le meme swing.
@@ -461,6 +506,7 @@ namespace cAlgo.Robots
 
             if (Server.Time > _setup.Expiry)
             {
+                _statExpired++;
                 CancelSetup("expire sans retest valide");
                 return;
             }
@@ -476,6 +522,7 @@ namespace cAlgo.Robots
                 : close > _setup.Level + InvalidationAtr * atr;
             if (invalidated)
             {
+                _statInvalidated++;
                 CancelSetup("fausse cassure (cloture 1H de l'autre cote du niveau)");
                 return;
             }
@@ -514,9 +561,32 @@ namespace cAlgo.Robots
             distance = Math.Min(distance, MaxStopAtr * atr);
 
             var stopPips = distance / Symbol.PipSize;
+
+            // Petit compte : a 0.01 lot, un stop 1H depasse souvent le plafond
+            // de risque. On le raccourcit jusqu'au plafond, sans descendre sous
+            // un minimum d'ATR (sinon le bruit le toucherait immediatement).
+            if (AdaptStopToSmallAccount && Account.Balance > 0)
+            {
+                var riskAtMin = RiskPercentAtMinVolume(stopPips);
+                if (riskAtMin > MaxRiskAtMinVolumePercent)
+                {
+                    var maxStopPips = stopPips * MaxRiskAtMinVolumePercent / riskAtMin * 0.98;
+                    var floorPips = AdaptedStopMinAtr * atr / Symbol.PipSize;
+                    if (maxStopPips >= floorPips)
+                    {
+                        Print("Stop reduit de {0:0.0} a {1:0.0} pips pour rester sous {2:0.0} % de risque.", stopPips, maxStopPips, MaxRiskAtMinVolumePercent);
+                        stopPips = maxStopPips;
+                        _statStopReduced++;
+                    }
+                }
+            }
+
             var volume = CalculatePositionVolume(stopPips);
             if (volume <= 0)
+            {
+                _statSkipRisk++;
                 return; // le setup reste actif : un stop plus court peut passer plus tard
+            }
 
             double? tpPips = null;
             if (UseTakeProfit)
@@ -529,8 +599,9 @@ namespace cAlgo.Robots
                 return;
             }
 
-            _initialRiskDistance = distance;
+            _initialRiskDistance = stopPips * Symbol.PipSize;
             _tradesThisWeek++;
+            _statTrades++;
             Print("{0} ouvert. Volume {1}, stop {2:0.0} pips, TP {3}.", _setup.Type, volume, stopPips,
                 tpPips.HasValue ? string.Format("{0:0.0} pips", tpPips.Value) : "aucun");
 
@@ -546,13 +617,17 @@ namespace cAlgo.Robots
                 return false;
 
             if (_dailyLimitHit)
+            {
+                _statSkipDaily++;
                 return false;
+            }
 
             var now = Server.Time;
 
             if (now < _cooldownUntil)
             {
                 Print("Entree ignoree : pause apres perte jusqu'au {0:dd/MM HH:mm}.", _cooldownUntil);
+                _statSkipCooldown++;
                 return false;
             }
 
@@ -560,16 +635,21 @@ namespace cAlgo.Robots
             if (_tradesThisWeek >= MaxTradesPerWeek)
             {
                 Print("Entree ignoree : {0} trades deja pris cette semaine.", _tradesThisWeek);
+                _statSkipWeekly++;
                 return false;
             }
 
             if (now.DayOfWeek == DayOfWeek.Friday && now.Hour >= NoEntryFridayAfterHour)
+            {
+                _statSkipFriday++;
                 return false;
+            }
 
             var spreadPips = Symbol.Spread / Symbol.PipSize;
             if (spreadPips > MaxSpreadPips)
             {
                 Print("Entree ignoree : spread trop large ({0:0.0} pips).", spreadPips);
+                _statSkipSpread++;
                 return false;
             }
 
@@ -715,7 +795,7 @@ namespace cAlgo.Robots
                 return 0;
 
             var minVolume = Symbol.VolumeInUnitsMin;
-            var riskAtMinPercent = stopLossPips * PipValuePerUnit() * minVolume / Account.Balance * 100.0;
+            var riskAtMinPercent = RiskPercentAtMinVolume(stopLossPips);
 
             if (riskAtMinPercent > MaxRiskAtMinVolumePercent)
             {
@@ -725,6 +805,11 @@ namespace cAlgo.Robots
 
             Print("Volume minimum utilise, risque reel {0:0.0} %.", riskAtMinPercent);
             return minVolume;
+        }
+
+        private double RiskPercentAtMinVolume(double stopLossPips)
+        {
+            return stopLossPips * PipValuePerUnit() * Symbol.VolumeInUnitsMin / Account.Balance * 100.0;
         }
 
         private double PipValuePerUnit()
