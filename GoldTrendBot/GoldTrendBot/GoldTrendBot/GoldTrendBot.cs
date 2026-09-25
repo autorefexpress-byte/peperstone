@@ -201,10 +201,13 @@ namespace cAlgo.Robots
 
             var rawVolume = riskAmount / (stopLossPips * PipValuePerUnit());
 
-            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
-
-            if (normalized < Symbol.VolumeInUnitsMin)
+            // Check before normalizing: NormalizeVolumeInUnits clamps up to the
+            // broker minimum, so a 0.3-unit volume would silently become 1 unit
+            // and bypass the min-volume risk cap.
+            if (rawVolume < Symbol.VolumeInUnitsMin)
                 return MinVolumeIfRiskAcceptable(stopLossPips);
+
+            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
 
             if (normalized > Symbol.VolumeInUnitsMax)
                 normalized = Symbol.VolumeInUnitsMax;
