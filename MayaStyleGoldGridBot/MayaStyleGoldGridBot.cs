@@ -500,6 +500,14 @@ namespace cAlgo.Robots
                         ? _gridAnchor.Value - step * (level + 1)
                         : _gridAnchor.Value + step * (level + 1);
 
+                    // Niveau deja traverse par le prix : un Buy limit au-dessus
+                    // de l'Ask (ou un Sell limit sous le Bid) est execute tout de
+                    // suite au marche. En backtest, la grille rachetait ainsi en
+                    // boucle une baisse (limite 4056.96 remplie a 4043.82).
+                    var levelAlreadyCrossed = side == TradeType.Buy ? levelPrice >= Symbol.Ask : levelPrice <= Symbol.Bid;
+                    if (levelAlreadyCrossed)
+                        continue;
+
                     if (PlacePendingLevel(side, levelLabel, levelPrice, level))
                         currentTotalLots += nextVolumeLots;
                 }
