@@ -97,6 +97,8 @@ namespace cAlgo.Robots
             Positions.Closed += OnPositionClosed;
 
             Print("GoldTrendBot started on {0} {1}", SymbolName, TimeFrame);
+            Print("Symbol info: PipSize {0}, PipValue {1}, TickSize {2}, TickValue {3}, pip value per unit used {4}, min volume {5} units.",
+                Symbol.PipSize, Symbol.PipValue, Symbol.TickSize, Symbol.TickValue, PipValuePerUnit(), Symbol.VolumeInUnitsMin);
         }
 
         protected override void OnBarClosed()
@@ -197,8 +199,7 @@ namespace cAlgo.Robots
         {
             var riskAmount = Account.Balance * (RiskPercent / 100.0);
 
-            // Symbol.PipValue = value of 1 pip for 1 unit of volume, in account currency.
-            var rawVolume = riskAmount / (stopLossPips * Symbol.PipValue);
+            var rawVolume = riskAmount / (stopLossPips * PipValuePerUnit());
 
             var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
 
@@ -219,7 +220,7 @@ namespace cAlgo.Robots
                 return 0;
 
             var minVolume = Symbol.VolumeInUnitsMin;
-            var riskAtMinPercent = stopLossPips * Symbol.PipValue * minVolume / Account.Balance * 100.0;
+            var riskAtMinPercent = stopLossPips * PipValuePerUnit() * minVolume / Account.Balance * 100.0;
 
             if (riskAtMinPercent > MaxRiskAtMinVolumePercent)
             {
@@ -229,6 +230,15 @@ namespace cAlgo.Robots
 
             Print("Risk-based volume below broker minimum: using min volume, real risk {0:0.0}%.", riskAtMinPercent);
             return minVolume;
+        }
+
+        // Value of one pip for one unit of volume, in account currency, derived
+        // from the tick value. Symbol.PipValue gave a far too small value on
+        // XAUUSD in backtest: with 1% risk on 200 EUR the bot still opened
+        // trades losing 10-15% of the balance, and the risk cap never applied.
+        private double PipValuePerUnit()
+        {
+            return Symbol.TickValue / Symbol.TickSize * Symbol.PipSize;
         }
 
         private void ManageTrailingStop()
