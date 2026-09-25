@@ -65,6 +65,14 @@ namespace cAlgo.Robots
         [Parameter("Risk per Trade (%)", Group = "Risk Management", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10)]
         public double RiskPercent { get; set; }
 
+        [Parameter("Allow Min Volume Fallback", Group = "Risk Management", DefaultValue = true,
+            Description = "On a small account the risk-based volume can fall below the broker minimum (0.01 lot). If on, trade the minimum volume instead, but only when its real risk stays under 'Max Risk at Min Volume (%)'.")]
+        public bool AllowMinVolumeFallback { get; set; }
+
+        [Parameter("Max Risk at Min Volume (%)", Group = "Risk Management", DefaultValue = 3.0, MinValue = 0.1, MaxValue = 10,
+            Description = "Hard cap on the real % of balance risked when the minimum volume fallback is used. Entries whose stop would risk more are skipped.")]
+        public double MaxRiskAtMinVolumePercent { get; set; }
+
         [Parameter("Max Spread (pips)", Group = "Safety", DefaultValue = 50, MinValue = 0,
             Description = "Skip new entries if the current spread is wider than this, to avoid trading during illiquid/news spikes.")]
         public double MaxSpreadPips { get; set; }
@@ -181,12 +189,32 @@ namespace cAlgo.Robots
             var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
 
             if (normalized < Symbol.VolumeInUnitsMin)
-                return 0;
+                return MinVolumeIfRiskAcceptable(stopLossPips);
 
             if (normalized > Symbol.VolumeInUnitsMax)
                 normalized = Symbol.VolumeInUnitsMax;
 
             return normalized;
+        }
+
+        // Without this, a ~200 EUR account never trades gold: the risk-based
+        // volume is always below 0.01 lot and the entry is skipped.
+        private double MinVolumeIfRiskAcceptable(double stopLossPips)
+        {
+            if (!AllowMinVolumeFallback || Account.Balance <= 0)
+                return 0;
+
+            var minVolume = Symbol.VolumeInUnitsMin;
+            var riskAtMinPercent = stopLossPips * Symbol.PipValue * minVolume / Account.Balance * 100.0;
+
+            if (riskAtMinPercent > MaxRiskAtMinVolumePercent)
+            {
+                Print("Min volume would risk {0:0.0}% (> {1:0.0}%), skipping entry.", riskAtMinPercent, MaxRiskAtMinVolumePercent);
+                return 0;
+            }
+
+            Print("Risk-based volume below broker minimum: using min volume, real risk {0:0.0}%.", riskAtMinPercent);
+            return minVolume;
         }
 
         private void ManageTrailingStop()

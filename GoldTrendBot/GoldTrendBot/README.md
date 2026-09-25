@@ -67,7 +67,31 @@ Git ne fait tourner aucun code : cTrader doit rester ouvert (ou tourner sur un V
 | Use Fixed Take Profit | false | Active un take-profit fixe posé à l'entrée |
 | Take Profit (x ATR) | 4.0 | Distance du take-profit fixe (si activé) |
 | Risk per Trade (%) | 1.0 | % du capital risqué par trade |
+| Allow Min Volume Fallback | Oui | Petit compte : trade 0,01 lot si le volume calculé est trop petit |
+| Max Risk at Min Volume (%) | 3.0 | Plafond du risque réel quand ce volume minimum est utilisé |
 | Max Spread (pips) | 50 | Sécurité anti-spread élevé |
+
+## Réglages pour un petit compte (~200 €)
+
+Sur l'or, le volume minimum est 0,01 lot (≈ 0,088 € par pip chez Pepperstone). Avec 200 € et 1 % de risque (2 €), le volume calculé est toujours **inférieur** à 0,01 lot : sans `Allow Min Volume Fallback`, le bot ne prendrait **aucun** trade. Avec l'option, il trade 0,01 lot tant que le risque réel du stop reste sous `Max Risk at Min Volume (%)`, sinon il saute l'entrée (message dans le log).
+
+Le stop étant en multiple d'ATR, son coût en euros dépend du timeframe. En H1, 2 × ATR vaut souvent 300 à 500 pips (26 à 44 €, soit 13 à 22 % de 200 €) : presque tous les signaux seraient sautés. Réglages de départ proposés :
+
+| Paramètre | Valeur |
+|---|---|
+| Timeframe du graphique | M5 |
+| Fast / Slow MA Period | 20 / 50 |
+| ATR Period / Average Period | 14 / 50 |
+| ATR Filter Threshold (%) | 80 |
+| Stop Loss (x ATR) | 1.5 |
+| Trailing Stop (x ATR) | 2.0 |
+| Use Fixed Take Profit | Non |
+| Risk per Trade (%) | 1.0 (sans effet tant que le volume minimum s'applique) |
+| Allow Min Volume Fallback | Oui |
+| Max Risk at Min Volume (%) | 3.0 (≈ 6 € max par trade) |
+| Max Spread (pips) | 15 |
+
+Ce bot n'a ni limite de perte journalière ni arrêt d'urgence : une seule position à la fois, donc au plus ≈ 6 € de perte par trade, mais c'est à vous d'arrêter le bot si le compte passe sous votre plancher (ex. 160 €).
 
 ## Prochaines étapes possibles
 
