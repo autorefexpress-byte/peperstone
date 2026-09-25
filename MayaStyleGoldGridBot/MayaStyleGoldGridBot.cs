@@ -1033,7 +1033,10 @@ namespace cAlgo.Robots
                 if (OnMaxSpreadAction == SpreadAction.BlockAndCancelPendings)
                     CancelAllPendings();
             }
-            else if (_spreadBlocked && currentSpreadPips <= MaxSpreadPips - SpreadRecoveryBufferPips)
+            // Le seuil de reprise ne descend jamais sous la moitie du Max Spread :
+            // avec Max Spread 2 et un buffer de 5 (EURUSD), il valait -3 pips et
+            // le bot restait bloque pour toujours apres le premier pic de spread.
+            else if (_spreadBlocked && currentSpreadPips <= Math.Max(MaxSpreadPips - SpreadRecoveryBufferPips, MaxSpreadPips * 0.5))
             {
                 _spreadBlocked = false;
                 Print("Spread revenu a la normale ({0:0.0} pips), entrees reautorisees.", currentSpreadPips);
