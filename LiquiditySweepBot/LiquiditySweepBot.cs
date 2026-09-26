@@ -25,6 +25,11 @@ namespace cAlgo.Robots
     //   - Sweep d'un swing low  + cloture au-dessus       -> ACHAT
     //   - Cloture au-dela du niveau (vraie cassure)       -> zone abandonnee
     //
+    // Option "Mode de trading" = Breakouts (ou Both) : une cloture au-dela du
+    // niveau est tradee dans le sens de la cassure (achat au-dessus d'un swing
+    // high, vente sous un swing low), stop au-dela de l'extreme oppose de la
+    // bougie de cassure.
+    //
     // Filtres : tendance HTF (EMA), creneau horaire, annonces US, spread, stop
     // max en ATR. Gestion du risque et sorties reprises d'IctSmcIchimokuBot.
     //
@@ -45,12 +50,23 @@ namespace cAlgo.Robots
             FullRange
         }
 
+        public enum TradeMode
+        {
+            Sweeps,
+            Breakouts,
+            Both
+        }
+
         // -- Liquidity Swings --
         [Parameter("Pivot Lookback", Group = "Liquidity Swings", DefaultValue = 14, MinValue = 2, MaxValue = 100)]
         public int PivotLength { get; set; }
 
         [Parameter("Swing Area", Group = "Liquidity Swings", DefaultValue = SwingAreaMode.WickExtremity)]
         public SwingAreaMode Area { get; set; }
+
+        [Parameter("Mode de trading", Group = "Liquidity Swings", DefaultValue = TradeMode.Sweeps,
+            Description = "Sweeps : meche au-dela du niveau puis cloture a l'interieur -> trade en sens inverse. Breakouts : cloture au-dela du niveau -> trade dans le sens de la cassure. Both : les deux.")]
+        public TradeMode Mode { get; set; }
 
         [Parameter("Retours min dans la zone", Group = "Liquidity Swings", DefaultValue = 0, MinValue = 0, MaxValue = 50,
             Description = "Nombre minimum de bougies revenues dans la zone avant le sweep (equivalent du filtre 'Count' de l'indicateur). 0 = toutes les zones.")]
@@ -341,37 +357,48 @@ namespace cAlgo.Robots
         {
             public TradeType TradeType;
             public Zone Zone;
-            public double SweepExtreme;
+            public bool IsBreakout;
+            // Prix au-dela duquel se place le stop : meche du sweep, ou extreme
+            // oppose de la bougie de cassure.
+            public double StopReference;
         }
 
-        // Met a jour les zones avec la bougie cloturee `n` et renvoie un sweep
-        // eventuel. Une zone ne peut etre chassee qu'une fois.
+        // Met a jour les zones avec la bougie cloturee `n` et renvoie le signal
+        // eventuel (sweep, ou cassure si active). Une zone ne sert qu'une fois.
         private SweepSignal UpdateZonesAndFindSweep(int n)
         {
             var high = Bars.HighPrices[n];
             var low = Bars.LowPrices[n];
             var close = Bars.ClosePrices[n];
-            SweepSignal signal = null;
+            var tradeSweeps = Mode != TradeMode.Breakouts;
+            var tradeBreakouts = Mode != TradeMode.Sweeps;
+            var candidates = new List<SweepSignal>();
 
             foreach (var zone in _highZones.Where(z => z.Active && z.PivotIndex + PivotLength < n))
             {
                 if (n - zone.PivotIndex > MaxZoneAgeBars)
                 {
-                    Deactivate(zone, n, false);
+                    Deactivate(zone, n, null);
                 }
                 else if (high > zone.Top && close < zone.Top)
                 {
-                    // Plusieurs niveaux chasses par la meme meche : on garde le plus haut.
-                    if (zone.Touches < MinTouches)
+                    if (!tradeSweeps)
+                        Log("Sweep swing high {0} : mode cassures seulement -> pas de trade.", zone.Top);
+                    else if (zone.Touches < MinTouches)
                         Log("Sweep swing high {0} ignore : {1} retours < {2} requis.", zone.Top, zone.Touches, MinTouches);
-                    else if (signal == null || zone.Top > signal.Zone.Top)
-                        signal = new SweepSignal { TradeType = TradeType.Sell, Zone = zone, SweepExtreme = high };
-                    Deactivate(zone, n, true);
+                    else
+                        candidates.Add(new SweepSignal { TradeType = TradeType.Sell, Zone = zone, StopReference = high });
+                    Deactivate(zone, n, tradeSweeps ? TradeType.Sell : (TradeType?)null);
                 }
                 else if (close > zone.Top)
                 {
-                    Log("Swing high {0} casse en cloture ({1}) : vraie cassure, pas un sweep -> pas de trade.", zone.Top, close);
-                    Deactivate(zone, n, false);
+                    if (!tradeBreakouts)
+                        Log("Swing high {0} casse en cloture ({1}) : vraie cassure, mode sweeps seulement -> pas de trade.", zone.Top, close);
+                    else if (zone.Touches < MinTouches)
+                        Log("Cassure swing high {0} ignoree : {1} retours < {2} requis.", zone.Top, zone.Touches, MinTouches);
+                    else
+                        candidates.Add(new SweepSignal { TradeType = TradeType.Buy, Zone = zone, IsBreakout = true, StopReference = low });
+                    Deactivate(zone, n, tradeBreakouts ? TradeType.Buy : (TradeType?)null);
                 }
                 else if (low < zone.Top && high > zone.Bottom)
                 {
@@ -379,25 +406,31 @@ namespace cAlgo.Robots
                 }
             }
 
-            SweepSignal buySignal = null;
             foreach (var zone in _lowZones.Where(z => z.Active && z.PivotIndex + PivotLength < n))
             {
                 if (n - zone.PivotIndex > MaxZoneAgeBars)
                 {
-                    Deactivate(zone, n, false);
+                    Deactivate(zone, n, null);
                 }
                 else if (low < zone.Bottom && close > zone.Bottom)
                 {
-                    if (zone.Touches < MinTouches)
+                    if (!tradeSweeps)
+                        Log("Sweep swing low {0} : mode cassures seulement -> pas de trade.", zone.Bottom);
+                    else if (zone.Touches < MinTouches)
                         Log("Sweep swing low {0} ignore : {1} retours < {2} requis.", zone.Bottom, zone.Touches, MinTouches);
-                    else if (buySignal == null || zone.Bottom < buySignal.Zone.Bottom)
-                        buySignal = new SweepSignal { TradeType = TradeType.Buy, Zone = zone, SweepExtreme = low };
-                    Deactivate(zone, n, true);
+                    else
+                        candidates.Add(new SweepSignal { TradeType = TradeType.Buy, Zone = zone, StopReference = low });
+                    Deactivate(zone, n, tradeSweeps ? TradeType.Buy : (TradeType?)null);
                 }
                 else if (close < zone.Bottom)
                 {
-                    Log("Swing low {0} casse en cloture ({1}) : vraie cassure, pas un sweep -> pas de trade.", zone.Bottom, close);
-                    Deactivate(zone, n, false);
+                    if (!tradeBreakouts)
+                        Log("Swing low {0} casse en cloture ({1}) : vraie cassure, mode sweeps seulement -> pas de trade.", zone.Bottom, close);
+                    else if (zone.Touches < MinTouches)
+                        Log("Cassure swing low {0} ignoree : {1} retours < {2} requis.", zone.Bottom, zone.Touches, MinTouches);
+                    else
+                        candidates.Add(new SweepSignal { TradeType = TradeType.Sell, Zone = zone, IsBreakout = true, StopReference = high });
+                    Deactivate(zone, n, tradeBreakouts ? TradeType.Sell : (TradeType?)null);
                 }
                 else if (low < zone.Top && high > zone.Bottom)
                 {
@@ -411,33 +444,44 @@ namespace cAlgo.Robots
             foreach (var zone in _highZones.Concat(_lowZones))
                 DrawZone(zone, n);
 
-            // Une bougie qui chasse les deux cotes a la fois n'est pas un signal clair.
-            if (signal != null && buySignal != null)
+            if (candidates.Count == 0)
+                return null;
+
+            // Signaux de sens opposes sur la meme bougie (ex. cassure d'un swing
+            // high et sweep d'un autre plus haut) : lecture ambigue, on s'abstient.
+            if (candidates.Any(c => c.TradeType != candidates[0].TradeType))
             {
-                Log("Sweep des deux cotes sur la meme bougie : signal ambigu, pas de trade.");
+                Log("Signaux contradictoires sur la meme bougie (achat et vente) : pas de trade.");
                 return null;
             }
 
-            return signal ?? buySignal;
+            // Meme sens : un sweep prime sur une cassure, puis le niveau le plus
+            // eloigne du prix (liquidite la plus importante).
+            return candidates
+                .OrderBy(c => c.IsBreakout)
+                .ThenByDescending(c => Math.Abs(c.Zone.Level - close))
+                .First();
         }
 
-        private void Deactivate(Zone zone, int n, bool swept)
+        // tradeDirection : sens du signal pris sur cette zone (fleche sur le
+        // graphique), ou null si la zone disparait sans signal.
+        private void Deactivate(Zone zone, int n, TradeType? tradeDirection)
         {
             zone.Active = false;
             if (!DrawZones)
                 return;
 
-            if (swept)
-            {
-                Chart.DrawTrendLine(ZoneName(zone), zone.PivotIndex, zone.Level, n, zone.Level,
-                    zone.IsHigh ? Color.Red : Color.Teal, 1, LineStyle.Lines);
-                Chart.DrawIcon(ZoneName(zone) + "_sweep", zone.IsHigh ? ChartIconType.DownArrow : ChartIconType.UpArrow,
-                    n, zone.IsHigh ? Bars.HighPrices[n] : Bars.LowPrices[n], zone.IsHigh ? Color.Red : Color.Teal);
-            }
-            else
+            if (tradeDirection == null)
             {
                 RemoveZoneDrawing(zone);
+                return;
             }
+
+            var isBuy = tradeDirection == TradeType.Buy;
+            Chart.DrawTrendLine(ZoneName(zone), zone.PivotIndex, zone.Level, n, zone.Level,
+                zone.IsHigh ? Color.Red : Color.Teal, 1, LineStyle.Lines);
+            Chart.DrawIcon(ZoneName(zone) + "_signal", isBuy ? ChartIconType.UpArrow : ChartIconType.DownArrow,
+                n, isBuy ? Bars.LowPrices[n] : Bars.HighPrices[n], isBuy ? Color.Teal : Color.Red);
         }
 
         private void DrawZone(Zone zone, int n)
@@ -472,9 +516,10 @@ namespace cAlgo.Robots
 
         private void TryEnter(SweepSignal signal, int n)
         {
-            var side = signal.TradeType == TradeType.Sell ? "swing high" : "swing low";
-            Log("Sweep {0} {1} detecte (meche {2}, cloture {3}, {4} retours) -> signal {5}.",
-                side, signal.Zone.Level, signal.SweepExtreme, Bars.ClosePrices[n], signal.Zone.Touches, signal.TradeType);
+            var side = signal.Zone.IsHigh ? "swing high" : "swing low";
+            var kind = signal.IsBreakout ? "Cassure" : "Sweep";
+            Log("{0} {1} {2} detecte (cloture {3}, stop au-dela de {4}, {5} retours) -> signal {6}.",
+                kind, side, signal.Zone.Level, Bars.ClosePrices[n], signal.StopReference, signal.Zone.Touches, signal.TradeType);
 
             if (Positions.Find(Label, SymbolName) != null)
             {
@@ -533,7 +578,7 @@ namespace cAlgo.Robots
 
             var entryPrice = signal.TradeType == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
             var buffer = atr * StopLossBufferAtr;
-            var stopPrice = signal.TradeType == TradeType.Buy ? signal.SweepExtreme - buffer : signal.SweepExtreme + buffer;
+            var stopPrice = signal.TradeType == TradeType.Buy ? signal.StopReference - buffer : signal.StopReference + buffer;
             var stopLossPips = Math.Max(Math.Abs(entryPrice - stopPrice) / Symbol.PipSize, MinStopLossPips);
 
             if (MaxStopLossAtr > 0 && stopLossPips * Symbol.PipSize > atr * MaxStopLossAtr)
@@ -550,7 +595,7 @@ namespace cAlgo.Robots
                 return;
             }
 
-            var reason = signal.TradeType == TradeType.Sell ? "Sweep swing high" : "Sweep swing low";
+            var reason = kind + " " + side;
             var result = ExecuteMarketOrder(signal.TradeType, SymbolName, volume, Label, stopLossPips, takeProfitPips, reason);
             if (!result.IsSuccessful)
             {

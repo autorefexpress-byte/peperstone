@@ -16,7 +16,19 @@ Au-dessus d'un swing high et sous un swing low s'accumulent des ordres stop (la 
 |---|---|---|
 | Mèche au-dessus d'un swing high, **clôture en dessous** | Liquidité prise, pas de vraie cassure | **VENTE** |
 | Mèche sous un swing low, **clôture au-dessus** | Liquidité prise, pas de vraie cassure | **ACHAT** |
-| Clôture au-delà du niveau | Vraie cassure | Zone abandonnée, pas de trade |
+| Clôture au-delà du niveau | Vraie cassure | Zone abandonnée, pas de trade (mode `Sweeps`) |
+
+### Mode cassures (option)
+
+Le paramètre **Mode de trading** choisit ce qui est tradé :
+
+| Mode | Sweep (mèche + clôture à l'intérieur) | Cassure (clôture au-delà) |
+|---|---|---|
+| `Sweeps` (défaut) | Trade **en sens inverse** | Zone abandonnée |
+| `Breakouts` | Zone abandonnée | Trade **dans le sens de la cassure** : achat au-dessus d'un swing high, vente sous un swing low |
+| `Both` | Trade en sens inverse | Trade dans le sens de la cassure |
+
+Pour une cassure, le stop se place au-delà de l'extrême opposé de la bougie de cassure (+ buffer ATR). Le filtre de tendance s'applique aussi : une cassure haussière n'est achetée qu'en tendance haussière. Si une même bougie donne un achat et une vente (ex. cassure d'un swing high et sweep d'un autre plus haut), le bot s'abstient.
 
 - **Stop loss** : au-delà de la mèche du sweep + un buffer en ATR (plancher en pips, plafond en ATR)
 - **Take profit** : `Risk:Reward` × stop (2R par défaut)
@@ -36,6 +48,7 @@ Protections reprises d'IctSmcIchimokuBot : sizing au risque (ou lot fixe), plafo
 
 | Paramètre | Défaut | Rôle |
 |---|---|---|
+| Mode de trading | Sweeps | `Sweeps`, `Breakouts` ou `Both` (voir ci-dessus) |
 | Pivot Lookback | 14 | Bougies de chaque côté pour confirmer un swing |
 | Swing Area | WickExtremity | Zone = mèche du pivot, ou bougie entière (`FullRange`) |
 | Retours min dans la zone | 0 | Ne trade que les zones revisitées au moins N fois avant le sweep |
