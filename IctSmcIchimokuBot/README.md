@@ -64,6 +64,7 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Lookback structure (swing) | 3 | Bougies de part et d'autre pour confirmer un pivot |
 | Fenêtre de validité (barres) | 15 | Durée de vie d'un sweep en attente de BOS, ou d'une zone en attente de retracement |
 | Entrée au premier contact uniquement | true | Abandonne la zone si le premier contact ne donne pas de rejet valide |
+| Lot fixe (0 = calcul au risque) | 0 | Si > 0 (ex. 0.01), trade toujours ce lot au lieu du calcul au risque ; le risque réel est affiché dans le log |
 | Risque par trade (%) | 1.0 | % du capital risqué par trade |
 | Risk:Reward (R) | 2.0 | Take profit = distance du stop × ce multiple |
 | Stops basés sur l'ATR | true | Buffer du stop en multiple d'ATR au lieu de pips fixes, et abandon des zones trop larges |
@@ -76,6 +77,9 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Break-even à 1R | true | Sécurise la position une fois 1R de profit atteint |
 | Max pertes consécutives | 3 | Pause du robot après ce nombre de pertes d'affilée |
 | Perte journalière max (%) | 5.0 | Coupe-circuit : suspend les entrées pour le reste de la journée (UTC) |
+| Fermer en fin de journée | true | Ferme la position à l'heure de fermeture et bloque les entrées après : rien d'ouvert la nuit ni le week-end |
+| Heure de fermeture (UTC) | 21 | Heure de cette fermeture quotidienne |
+| Durée max en position (heures) | 0 | Ferme une position qui n'a touché ni SL ni TP après ce délai (0 = désactivé) |
 | Max Spread (pips) | 50 | Sécurité anti-spread élevé |
 | Créneau Londres | 07h-10h UTC | Killzone ICT classique |
 | Créneau New York | 12h-15h UTC | Killzone ICT classique |

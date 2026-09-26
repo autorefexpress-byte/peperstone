@@ -102,6 +102,10 @@ namespace cAlgo.Robots
         public bool FirstTouchOnly { get; set; }
 
         // -- Gestion du risque --
+        [Parameter("Lot fixe (0 = calcul au risque)", Group = "Risk Management", DefaultValue = 0.0, MinValue = 0.0, Step = 0.01,
+            Description = "Si > 0, trade toujours ce nombre de lots au lieu du calcul au risque. Le risque reel est affiche dans le log a chaque entree.")]
+        public double FixedLots { get; set; }
+
         [Parameter("Risque par trade (%)", Group = "Risk Management", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10)]
         public double RiskPercent { get; set; }
 
@@ -147,6 +151,18 @@ namespace cAlgo.Robots
 
         [Parameter("Perte journaliere max (%)", Group = "Risk Management", DefaultValue = 5.0, MinValue = 0.5, MaxValue = 50.0, Step = 0.5)]
         public double MaxDailyLossPercent { get; set; }
+
+        // -- Sorties par le temps --
+        [Parameter("Fermer en fin de journee", Group = "Sortie", DefaultValue = true,
+            Description = "Ferme la position a l'heure ci-dessous et bloque les nouvelles entrees apres cette heure : pas de position la nuit ni le week-end (swap, gaps).")]
+        public bool UseDailyClose { get; set; }
+
+        [Parameter("Heure de fermeture (UTC)", Group = "Sortie", DefaultValue = 21, MinValue = 1, MaxValue = 23)]
+        public int DailyCloseHour { get; set; }
+
+        [Parameter("Duree max en position (heures)", Group = "Sortie", DefaultValue = 0, MinValue = 0, MaxValue = 500,
+            Description = "Ferme la position apres ce nombre d'heures si ni le SL ni le TP n'ont ete touches. 0 = desactive.")]
+        public int MaxHoursInTrade { get; set; }
 
         // -- Securite --
         [Parameter("Max Spread (pips)", Group = "Safety", DefaultValue = 50, MinValue = 0)]
@@ -229,6 +245,11 @@ namespace cAlgo.Robots
                 Symbol.PipSize, Symbol.PipValue, Symbol.TickSize, Symbol.TickValue, PipValuePerUnit(), Symbol.VolumeInUnitsMin);
         }
 
+        protected override void OnTick()
+        {
+            ManageTimeExits();
+        }
+
         protected override void OnBarClosed()
         {
             _barCounter++;
@@ -254,6 +275,9 @@ namespace cAlgo.Robots
                 return;
 
             if (!IsKillzone(barTimeUtc))
+                return;
+
+            if (UseDailyClose && Server.Time.Hour >= DailyCloseHour)
                 return;
 
             if (_consecutiveLosses >= MaxConsecutiveLosses || _dailyLossLimitHit)
@@ -743,8 +767,9 @@ namespace cAlgo.Robots
             if (result.IsSuccessful)
             {
                 _breakEvenDone = false;
-                Print("{0} entree remplie ({1}). SL: {2} pips, TP: {3} pips ({4}R)",
-                    tradeType, reason, Math.Round(stopLossPips, 1), Math.Round(takeProfitPips, 1), RiskRewardRatio);
+                Print("{0} entree remplie ({1}). Volume: {2}, risque: {3:0.0}%, SL: {4} pips, TP: {5} pips ({6}R)",
+                    tradeType, reason, volume, stopLossPips * PipValuePerUnit() * volume / Account.Balance * 100.0,
+                    Math.Round(stopLossPips, 1), Math.Round(takeProfitPips, 1), RiskRewardRatio);
                 return true;
             }
 
@@ -754,6 +779,18 @@ namespace cAlgo.Robots
 
         private double CalculatePositionVolume(double stopLossPips)
         {
+            if (FixedLots > 0)
+            {
+                var fixedUnits = Symbol.QuantityToVolumeInUnits(FixedLots);
+                if (fixedUnits < Symbol.VolumeInUnitsMin)
+                {
+                    Print("Lot fixe {0} inferieur au minimum du broker ({1} lot), entree ignoree.", FixedLots, Symbol.VolumeInUnitsToQuantity(Symbol.VolumeInUnitsMin));
+                    return 0;
+                }
+
+                return Math.Min(Symbol.NormalizeVolumeInUnits(fixedUnits, RoundingMode.Down), Symbol.VolumeInUnitsMax);
+            }
+
             var riskAmount = Account.Balance * (RiskPercent / 100.0);
             var rawVolume = riskAmount / (stopLossPips * PipValuePerUnit());
 
@@ -795,6 +832,31 @@ namespace cAlgo.Robots
         private double PipValuePerUnit()
         {
             return Symbol.TickValue / Symbol.TickSize * Symbol.PipSize;
+        }
+
+        // Ferme la position du bot en fin de journee (et celle ouverte un jour
+        // precedent, ex. apres un redemarrage) et au-dela de la duree max.
+        private void ManageTimeExits()
+        {
+            if (!UseDailyClose && MaxHoursInTrade <= 0)
+                return;
+
+            var position = Positions.Find(Label, SymbolName);
+            if (position == null)
+                return;
+
+            var now = Server.Time;
+            string reason = null;
+            if (UseDailyClose && (now.Hour >= DailyCloseHour || position.EntryTime.Date < now.Date))
+                reason = string.Format("fin de journee ({0}h UTC)", DailyCloseHour);
+            else if (MaxHoursInTrade > 0 && now - position.EntryTime >= TimeSpan.FromHours(MaxHoursInTrade))
+                reason = string.Format("duree max atteinte ({0}h)", MaxHoursInTrade);
+
+            if (reason == null)
+                return;
+
+            Print("Fermeture position : {0}.", reason);
+            ClosePosition(position);
         }
 
         private bool HasOpenPosition()
