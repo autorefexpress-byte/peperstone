@@ -160,6 +160,14 @@ namespace cAlgo.Robots
         [Parameter("Heure de fermeture (UTC)", Group = "Sortie", DefaultValue = 21, MinValue = 1, MaxValue = 23)]
         public int DailyCloseHour { get; set; }
 
+        [Parameter("Heure de fermeture vendredi (UTC)", Group = "Sortie", DefaultValue = 20, MinValue = 1, MaxValue = 23,
+            Description = "Le marche ferme vers 21h UTC le vendredi : apres, plus aucun tick n'arrive et une position ne peut plus etre fermee avant la reouverture du dimanche soir. A mettre avant la cloture du broker.")]
+        public int FridayCloseHour { get; set; }
+
+        [Parameter("Derniere entree (heures avant fermeture)", Group = "Sortie", DefaultValue = 1, MinValue = 0, MaxValue = 12,
+            Description = "Bloque les nouvelles entrees ce nombre d'heures avant l'heure de fermeture, pour ne pas ouvrir un trade qui sera coupe presque aussitot.")]
+        public int NoEntryHoursBeforeClose { get; set; }
+
         [Parameter("Duree max en position (heures)", Group = "Sortie", DefaultValue = 0, MinValue = 0, MaxValue = 500,
             Description = "Ferme la position apres ce nombre d'heures si ni le SL ni le TP n'ont ete touches. 0 = desactive.")]
         public int MaxHoursInTrade { get; set; }
@@ -277,7 +285,7 @@ namespace cAlgo.Robots
             if (!IsKillzone(barTimeUtc))
                 return;
 
-            if (UseDailyClose && Server.Time.Hour >= DailyCloseHour)
+            if (UseDailyClose && Server.Time.Hour >= CloseHourFor(Server.Time) - NoEntryHoursBeforeClose)
                 return;
 
             if (_consecutiveLosses >= MaxConsecutiveLosses || _dailyLossLimitHit)
@@ -834,6 +842,11 @@ namespace cAlgo.Robots
             return Symbol.TickValue / Symbol.TickSize * Symbol.PipSize;
         }
 
+        private int CloseHourFor(DateTime timeUtc)
+        {
+            return timeUtc.DayOfWeek == DayOfWeek.Friday ? FridayCloseHour : DailyCloseHour;
+        }
+
         // Ferme la position du bot en fin de journee (et celle ouverte un jour
         // precedent, ex. apres un redemarrage) et au-dela de la duree max.
         private void ManageTimeExits()
@@ -847,8 +860,8 @@ namespace cAlgo.Robots
 
             var now = Server.Time;
             string reason = null;
-            if (UseDailyClose && (now.Hour >= DailyCloseHour || position.EntryTime.Date < now.Date))
-                reason = string.Format("fin de journee ({0}h UTC)", DailyCloseHour);
+            if (UseDailyClose && (now.Hour >= CloseHourFor(now) || position.EntryTime.Date < now.Date))
+                reason = string.Format("fin de journee ({0}h UTC)", CloseHourFor(now));
             else if (MaxHoursInTrade > 0 && now - position.EntryTime >= TimeSpan.FromHours(MaxHoursInTrade))
                 reason = string.Format("duree max atteinte ({0}h)", MaxHoursInTrade);
 

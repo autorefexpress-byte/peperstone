@@ -79,6 +79,8 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Perte journalière max (%) | 5.0 | Coupe-circuit : suspend les entrées pour le reste de la journée (UTC) |
 | Fermer en fin de journée | true | Ferme la position à l'heure de fermeture et bloque les entrées après : rien d'ouvert la nuit ni le week-end |
 | Heure de fermeture (UTC) | 21 | Heure de cette fermeture quotidienne |
+| Heure de fermeture vendredi (UTC) | 20 | Fermeture avancée le vendredi : le marché ferme vers 21h UTC, après il n'y a plus de tick pour fermer avant la réouverture du dimanche |
+| Dernière entrée (heures avant fermeture) | 1 | Pas de nouvelle entrée dans la dernière heure avant la fermeture |
 | Durée max en position (heures) | 0 | Ferme une position qui n'a touché ni SL ni TP après ce délai (0 = désactivé) |
 | Max Spread (pips) | 50 | Sécurité anti-spread élevé |
 | Créneau Londres | 07h-10h UTC | Killzone ICT classique |

@@ -83,6 +83,8 @@ Même principe que pour GoldTrendBot : ce dépôt reste la source de vérité ve
 | Stop Loss / TP1 / TP2 (%) | 2.5 / 2.5 / 5.0 | Utilisés seulement si le mode ATR est désactivé. Distances en % du prix (x4 vs les défauts 5 min d'origine, ratio 1:1:2 conservé — a réaffiner par backtest) |
 | Fermer en fin de journée | true | Ferme les positions à l'heure de fermeture et bloque les entrées après : rien d'ouvert la nuit ni le week-end. À désactiver pour du swing en 4H |
 | Heure de fermeture (UTC) | 21 | Heure de cette fermeture quotidienne |
+| Heure de fermeture vendredi (UTC) | 20 | Fermeture avancée le vendredi : le marché ferme vers 21h UTC, après il n'y a plus de tick pour fermer avant la réouverture du dimanche |
+| Dernière entrée (heures avant fermeture) | 1 | Pas de nouvelle entrée dans la dernière heure avant la fermeture |
 | Durée max en position (heures) | 0 | Ferme une position qui n'a touché ni SL ni TP après ce délai (0 = désactivé) |
 | Break-even après TP1 | true | Sécurise la position restante une fois TP1 atteint |
 | Max pertes consécutives | 3 | Nombre de pertes d'affilée avant mise en pause du robot |
