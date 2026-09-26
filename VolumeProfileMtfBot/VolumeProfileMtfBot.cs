@@ -296,6 +296,12 @@ namespace cAlgo.Robots
                 return;
             }
 
+            if (totalVolume / 2.0 < Symbol.VolumeInUnitsMin)
+            {
+                Print("Volume trop faible pour scinder en jambes TP1/TP2, entree ignoree.");
+                return;
+            }
+
             var halfVolume = Symbol.NormalizeVolumeInUnits(totalVolume / 2.0, RoundingMode.Down);
             var remainderVolume = Symbol.NormalizeVolumeInUnits(totalVolume - halfVolume, RoundingMode.Down);
 
@@ -335,10 +341,13 @@ namespace cAlgo.Robots
         {
             var notional = Account.Equity * (PositionSizePercent / 100.0);
             var rawVolume = notional / Symbol.Bid;
-            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
-
-            if (normalized < Symbol.VolumeInUnitsMin)
+            // Test sur le volume BRUT : NormalizeVolumeInUnits remonte un volume
+            // trop petit au minimum du symbole, ce qui ferait risquer bien plus
+            // que prevu sur un petit compte au lieu d'ignorer l'entree.
+            if (rawVolume < Symbol.VolumeInUnitsMin)
                 return 0;
+
+            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
 
             if (normalized > Symbol.VolumeInUnitsMax)
                 normalized = Symbol.VolumeInUnitsMax;

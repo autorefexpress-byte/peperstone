@@ -600,10 +600,13 @@ namespace cAlgo.Robots
         {
             var riskAmount = Account.Balance * (RiskPercent / 100.0);
             var rawVolume = riskAmount / (stopLossPips * Symbol.PipValue);
-            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
-
-            if (normalized < Symbol.VolumeInUnitsMin)
+            // Test sur le volume BRUT : NormalizeVolumeInUnits remonte un volume
+            // trop petit au minimum du symbole, ce qui ferait risquer bien plus
+            // que prevu sur un petit compte au lieu d'ignorer l'entree.
+            if (rawVolume < Symbol.VolumeInUnitsMin)
                 return 0;
+
+            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
 
             if (normalized > Symbol.VolumeInUnitsMax)
                 normalized = Symbol.VolumeInUnitsMax;

@@ -67,6 +67,8 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Risque par trade (%) | 1.0 | % du capital risqué par trade |
 | Risk:Reward (R) | 2.0 | Take profit = distance du stop × ce multiple |
 | Buffer Stop Loss (pips) | 20 | Marge ajoutée au-delà de la zone pour le stop loss |
+| Autoriser volume minimum (petit compte) | true | Si le volume calculé au risque est sous le minimum du broker (0,01 lot), trade ce minimum… |
+| Risque max au volume minimum (%) | 3.0 | …seulement si le risque réel du stop reste sous ce plafond, sinon l'entrée est ignorée (message dans le log) |
 | Break-even à 1R | true | Sécurise la position une fois 1R de profit atteint |
 | Max pertes consécutives | 3 | Pause du robot après ce nombre de pertes d'affilée |
 | Perte journalière max (%) | 5.0 | Coupe-circuit : suspend les entrées pour le reste de la journée (UTC) |

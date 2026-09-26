@@ -620,10 +620,13 @@ namespace cAlgo.Robots
         private double NormalizedVolume(double lots)
         {
             var rawUnits = Symbol.QuantityToVolumeInUnits(lots);
-            var normalized = Symbol.NormalizeVolumeInUnits(rawUnits, RoundingMode.Down);
-
-            if (normalized < Symbol.VolumeInUnitsMin)
+            // Test sur le volume BRUT : NormalizeVolumeInUnits remonte un volume
+            // trop petit au minimum du symbole, ce qui ferait risquer bien plus
+            // que prevu sur un petit compte au lieu d'ignorer l'entree.
+            if (rawUnits < Symbol.VolumeInUnitsMin)
                 return 0;
+
+            var normalized = Symbol.NormalizeVolumeInUnits(rawUnits, RoundingMode.Down);
 
             if (normalized > Symbol.VolumeInUnitsMax)
                 return Symbol.VolumeInUnitsMax;

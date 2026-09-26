@@ -110,6 +110,14 @@ namespace cAlgo.Robots
         [Parameter("Buffer Stop Loss (pips)", Group = "Risk Management", DefaultValue = 20, MinValue = 0)]
         public double StopLossBufferPips { get; set; }
 
+        [Parameter("Autoriser volume minimum (petit compte)", Group = "Risk Management", DefaultValue = true,
+            Description = "Sur un petit compte, le volume calcule au risque peut etre inferieur au minimum du broker (0,01 lot). Si active, trade le volume minimum a la place, mais seulement si son risque reel reste sous 'Risque max au volume minimum (%)'.")]
+        public bool AllowMinVolumeFallback { get; set; }
+
+        [Parameter("Risque max au volume minimum (%)", Group = "Risk Management", DefaultValue = 3.0, MinValue = 0.1, MaxValue = 10,
+            Description = "Plafond du % reel du capital risque quand le volume minimum est utilise. Les entrees dont le stop risquerait plus sont ignorees.")]
+        public double MaxRiskAtMinVolumePercent { get; set; }
+
         [Parameter("Break-even a 1R", Group = "Risk Management", DefaultValue = true)]
         public bool UseBreakEvenAt1R { get; set; }
 
@@ -197,6 +205,8 @@ namespace cAlgo.Robots
 
             Positions.Closed += OnPositionClosed;
             Print("IctSmcIchimokuBot started on {0} {1} (Ichimoku sur {2})", SymbolName, TimeFrame, _ichimokuBars.TimeFrame);
+            Print("Symbole: PipSize {0}, PipValue {1}, TickSize {2}, TickValue {3}, valeur pip/unite utilisee {4}, volume min {5} unites.",
+                Symbol.PipSize, Symbol.PipValue, Symbol.TickSize, Symbol.TickValue, PipValuePerUnit(), Symbol.VolumeInUnitsMin);
         }
 
         protected override void OnBarClosed()
@@ -685,16 +695,46 @@ namespace cAlgo.Robots
         private double CalculatePositionVolume(double stopLossPips)
         {
             var riskAmount = Account.Balance * (RiskPercent / 100.0);
-            var rawVolume = riskAmount / (stopLossPips * Symbol.PipValue);
-            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
+            var rawVolume = riskAmount / (stopLossPips * PipValuePerUnit());
 
-            if (normalized < Symbol.VolumeInUnitsMin)
-                return 0;
+            // Test sur le volume BRUT : NormalizeVolumeInUnits remonte un volume
+            // trop petit au minimum du symbole, ce qui ferait risquer bien plus
+            // que prevu sur un petit compte (vu sur XAUUSD : SL de 87 a 677 pips,
+            // tous a 1 unite) au lieu de passer par le plafond ci-dessous.
+            if (rawVolume < Symbol.VolumeInUnitsMin)
+                return MinVolumeIfRiskAcceptable(stopLossPips);
+
+            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
 
             if (normalized > Symbol.VolumeInUnitsMax)
                 normalized = Symbol.VolumeInUnitsMax;
 
             return normalized;
+        }
+
+        private double MinVolumeIfRiskAcceptable(double stopLossPips)
+        {
+            if (!AllowMinVolumeFallback || Account.Balance <= 0)
+                return 0;
+
+            var minVolume = Symbol.VolumeInUnitsMin;
+            var riskAtMinPercent = stopLossPips * PipValuePerUnit() * minVolume / Account.Balance * 100.0;
+
+            if (riskAtMinPercent > MaxRiskAtMinVolumePercent)
+            {
+                Print("Le volume minimum risquerait {0:0.0}% (> {1:0.0}%), entree ignoree.", riskAtMinPercent, MaxRiskAtMinVolumePercent);
+                return 0;
+            }
+
+            return minVolume;
+        }
+
+        // Valeur d'un pip pour une unite de volume, en devise du compte, derivee
+        // de la tick value (Symbol.PipValue donnait une valeur bien trop faible
+        // sur XAUUSD en backtest, cf. GoldTrendBot).
+        private double PipValuePerUnit()
+        {
+            return Symbol.TickValue / Symbol.TickSize * Symbol.PipSize;
         }
 
         private bool HasOpenPosition()
