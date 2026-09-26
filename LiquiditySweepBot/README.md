@@ -27,6 +27,20 @@ Le paramètre **Mode de trading** choisit ce qui est tradé :
 | `Sweeps` (défaut) | Trade **en sens inverse** | Zone abandonnée |
 | `Breakouts` | Zone abandonnée | Trade **dans le sens de la cassure** : achat au-dessus d'un swing high, vente sous un swing low |
 | `Both` | Trade en sens inverse | Trade dans le sens de la cassure |
+| `Touch` | — | — : entrée **immédiate dès que le prix touche la ligne**, sans attendre la clôture (voir ci-dessous) |
+
+### Mode Touch
+
+Entrée au tick, dès que le prix (Bid) touche une ligne de liquidité. Chaque ligne ne déclenche qu'une fois.
+
+| Sens au toucher | Ligne haute touchée | Ligne basse touchée |
+|---|---|---|
+| `Rebound` (défaut) | **Vente** | **Achat** |
+| `Breakout` | **Achat** | **Vente** |
+
+Stop à `SL au toucher (x ATR)` de la ligne (1 ATR par défaut, plancher `SL minimum (pips)`), TP = R × stop. Tous les filtres restent actifs (tendance, créneau, news, spread, plafond de risque).
+
+⚠️ Sans confirmation de clôture, ce mode entre aussi sur les vraies cassures en `Rebound` (et sur les faux départs en `Breakout`) : taux de réussite plus faible, à valider par backtest.
 
 Pour une cassure, le stop se place au-delà de l'extrême opposé de la bougie de cassure (+ buffer ATR). Le filtre de tendance s'applique aussi : une cassure haussière n'est achetée qu'en tendance haussière. Si une même bougie donne un achat et une vente (ex. cassure d'un swing high et sweep d'un autre plus haut), le bot s'abstient.
 
@@ -48,7 +62,9 @@ Protections reprises d'IctSmcIchimokuBot : sizing au risque (ou lot fixe), plafo
 
 | Paramètre | Défaut | Rôle |
 |---|---|---|
-| Mode de trading | Sweeps | `Sweeps`, `Breakouts` ou `Both` (voir ci-dessus) |
+| Mode de trading | Sweeps | `Sweeps`, `Breakouts`, `Both` ou `Touch` (voir ci-dessus) |
+| Sens au toucher (mode Touch) | Rebound | `Rebound` ou `Breakout` |
+| SL au toucher (x ATR) | 1.0 | Distance du stop depuis la ligne touchée |
 | Pivot Lookback | 14 | Bougies de chaque côté pour confirmer un swing |
 | Swing Area | WickExtremity | Zone = mèche du pivot, ou bougie entière (`FullRange`) |
 | Retours min dans la zone | 0 | Ne trade que les zones revisitées au moins N fois avant le sweep |

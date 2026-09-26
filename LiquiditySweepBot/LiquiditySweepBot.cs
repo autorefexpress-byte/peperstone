@@ -30,6 +30,11 @@ namespace cAlgo.Robots
     // high, vente sous un swing low), stop au-dela de l'extreme oppose de la
     // bougie de cassure.
     //
+    // Option "Mode de trading" = Touch : entree immediate (au tick) des que le
+    // prix touche la ligne, sans attendre de cloture. "Sens au toucher" choisit
+    // rebond (vente en haut, achat en bas) ou cassure (achat en haut, vente en
+    // bas) ; stop a "SL au toucher (x ATR)" de la ligne.
+    //
     // Filtres : tendance HTF (EMA), creneau horaire, annonces US, spread, stop
     // max en ATR. Gestion du risque et sorties reprises d'IctSmcIchimokuBot.
     //
@@ -54,7 +59,14 @@ namespace cAlgo.Robots
         {
             Sweeps,
             Breakouts,
-            Both
+            Both,
+            Touch
+        }
+
+        public enum TouchDirection
+        {
+            Rebound,
+            Breakout
         }
 
         // -- Liquidity Swings --
@@ -65,8 +77,16 @@ namespace cAlgo.Robots
         public SwingAreaMode Area { get; set; }
 
         [Parameter("Mode de trading", Group = "Liquidity Swings", DefaultValue = TradeMode.Sweeps,
-            Description = "Sweeps : meche au-dela du niveau puis cloture a l'interieur -> trade en sens inverse. Breakouts : cloture au-dela du niveau -> trade dans le sens de la cassure. Both : les deux.")]
+            Description = "Sweeps : meche au-dela du niveau puis cloture a l'interieur -> trade en sens inverse. Breakouts : cloture au-dela du niveau -> trade dans le sens de la cassure. Both : les deux. Touch : entree immediate des que le prix touche la ligne, sans attendre la cloture.")]
         public TradeMode Mode { get; set; }
+
+        [Parameter("Sens au toucher (mode Touch)", Group = "Liquidity Swings", DefaultValue = TouchDirection.Rebound,
+            Description = "Mode Touch : Rebound = vente au toucher de la ligne haute, achat au toucher de la ligne basse. Breakout = achat au toucher de la ligne haute, vente au toucher de la ligne basse.")]
+        public TouchDirection TouchSide { get; set; }
+
+        [Parameter("SL au toucher (x ATR)", Group = "Liquidity Swings", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10, Step = 0.1,
+            Description = "Mode Touch : distance du stop loss depuis la ligne touchee, en multiple de l'ATR (plancher 'SL minimum (pips)').")]
+        public double TouchStopAtr { get; set; }
 
         [Parameter("Retours min dans la zone", Group = "Liquidity Swings", DefaultValue = 0, MinValue = 0, MaxValue = 50,
             Description = "Nombre minimum de bougies revenues dans la zone avant le sweep (equivalent du filtre 'Count' de l'indicateur). 0 = toutes les zones.")]
@@ -237,6 +257,9 @@ namespace cAlgo.Robots
 
         protected override void OnTick()
         {
+            if (Mode == TradeMode.Touch)
+                CheckTouches();
+
             ManageTimeExits();
             ManageBreakEven();
         }
@@ -361,6 +384,9 @@ namespace cAlgo.Robots
             // Prix au-dela duquel se place le stop : meche du sweep, ou extreme
             // oppose de la bougie de cassure.
             public double StopReference;
+            public bool IsTouch;
+            // Distance du stop depuis StopReference, en multiple de l'ATR.
+            public double BufferAtr;
         }
 
         // Met a jour les zones avec la bougie cloturee `n` et renvoie le signal
@@ -370,8 +396,8 @@ namespace cAlgo.Robots
             var high = Bars.HighPrices[n];
             var low = Bars.LowPrices[n];
             var close = Bars.ClosePrices[n];
-            var tradeSweeps = Mode != TradeMode.Breakouts;
-            var tradeBreakouts = Mode != TradeMode.Sweeps;
+            var tradeSweeps = Mode == TradeMode.Sweeps || Mode == TradeMode.Both;
+            var tradeBreakouts = Mode == TradeMode.Breakouts || Mode == TradeMode.Both;
             var candidates = new List<SweepSignal>();
 
             foreach (var zone in _highZones.Where(z => z.Active && z.PivotIndex + PivotLength < n))
@@ -383,21 +409,21 @@ namespace cAlgo.Robots
                 else if (high > zone.Top && close < zone.Top)
                 {
                     if (!tradeSweeps)
-                        Log("Sweep swing high {0} : mode cassures seulement -> pas de trade.", zone.Top);
+                        Log("Sweep swing high {0} : mode {1} -> pas de trade sur sweep.", zone.Top, Mode);
                     else if (zone.Touches < MinTouches)
                         Log("Sweep swing high {0} ignore : {1} retours < {2} requis.", zone.Top, zone.Touches, MinTouches);
                     else
-                        candidates.Add(new SweepSignal { TradeType = TradeType.Sell, Zone = zone, StopReference = high });
+                        candidates.Add(new SweepSignal { TradeType = TradeType.Sell, Zone = zone, StopReference = high, BufferAtr = StopLossBufferAtr });
                     Deactivate(zone, n, tradeSweeps ? TradeType.Sell : (TradeType?)null);
                 }
                 else if (close > zone.Top)
                 {
                     if (!tradeBreakouts)
-                        Log("Swing high {0} casse en cloture ({1}) : vraie cassure, mode sweeps seulement -> pas de trade.", zone.Top, close);
+                        Log("Swing high {0} casse en cloture ({1}) : mode {2} -> pas de trade sur cassure.", zone.Top, close, Mode);
                     else if (zone.Touches < MinTouches)
                         Log("Cassure swing high {0} ignoree : {1} retours < {2} requis.", zone.Top, zone.Touches, MinTouches);
                     else
-                        candidates.Add(new SweepSignal { TradeType = TradeType.Buy, Zone = zone, IsBreakout = true, StopReference = low });
+                        candidates.Add(new SweepSignal { TradeType = TradeType.Buy, Zone = zone, IsBreakout = true, StopReference = low, BufferAtr = StopLossBufferAtr });
                     Deactivate(zone, n, tradeBreakouts ? TradeType.Buy : (TradeType?)null);
                 }
                 else if (low < zone.Top && high > zone.Bottom)
@@ -415,21 +441,21 @@ namespace cAlgo.Robots
                 else if (low < zone.Bottom && close > zone.Bottom)
                 {
                     if (!tradeSweeps)
-                        Log("Sweep swing low {0} : mode cassures seulement -> pas de trade.", zone.Bottom);
+                        Log("Sweep swing low {0} : mode {1} -> pas de trade sur sweep.", zone.Bottom, Mode);
                     else if (zone.Touches < MinTouches)
                         Log("Sweep swing low {0} ignore : {1} retours < {2} requis.", zone.Bottom, zone.Touches, MinTouches);
                     else
-                        candidates.Add(new SweepSignal { TradeType = TradeType.Buy, Zone = zone, StopReference = low });
+                        candidates.Add(new SweepSignal { TradeType = TradeType.Buy, Zone = zone, StopReference = low, BufferAtr = StopLossBufferAtr });
                     Deactivate(zone, n, tradeSweeps ? TradeType.Buy : (TradeType?)null);
                 }
                 else if (close < zone.Bottom)
                 {
                     if (!tradeBreakouts)
-                        Log("Swing low {0} casse en cloture ({1}) : vraie cassure, mode sweeps seulement -> pas de trade.", zone.Bottom, close);
+                        Log("Swing low {0} casse en cloture ({1}) : mode {2} -> pas de trade sur cassure.", zone.Bottom, close, Mode);
                     else if (zone.Touches < MinTouches)
                         Log("Cassure swing low {0} ignoree : {1} retours < {2} requis.", zone.Bottom, zone.Touches, MinTouches);
                     else
-                        candidates.Add(new SweepSignal { TradeType = TradeType.Sell, Zone = zone, IsBreakout = true, StopReference = high });
+                        candidates.Add(new SweepSignal { TradeType = TradeType.Sell, Zone = zone, IsBreakout = true, StopReference = high, BufferAtr = StopLossBufferAtr });
                     Deactivate(zone, n, tradeBreakouts ? TradeType.Sell : (TradeType?)null);
                 }
                 else if (low < zone.Top && high > zone.Bottom)
@@ -461,6 +487,49 @@ namespace cAlgo.Robots
                 .OrderBy(c => c.IsBreakout)
                 .ThenByDescending(c => Math.Abs(c.Zone.Level - close))
                 .First();
+        }
+
+        // Mode Touch : entree des que le prix (Bid) touche une ligne de liquidite,
+        // sans attendre la cloture. Chaque ligne ne declenche qu'une fois.
+        private void CheckTouches()
+        {
+            var current = Bars.Count - 1;
+            var lastClosed = current - 1;
+            var bid = Symbol.Bid;
+
+            var touchedHigh = _highZones
+                .Where(z => z.Active && z.PivotIndex + PivotLength <= lastClosed && bid >= z.Top)
+                .OrderBy(z => z.Top)
+                .FirstOrDefault();
+            var touchedLow = _lowZones
+                .Where(z => z.Active && z.PivotIndex + PivotLength <= lastClosed && bid <= z.Bottom)
+                .OrderByDescending(z => z.Bottom)
+                .FirstOrDefault();
+
+            foreach (var zone in new[] { touchedHigh, touchedLow })
+            {
+                if (zone == null)
+                    continue;
+
+                var rebound = TouchSide == TouchDirection.Rebound;
+                var tradeType = zone.IsHigh == rebound ? TradeType.Sell : TradeType.Buy;
+                Deactivate(zone, current, tradeType);
+
+                if (zone.Touches < MinTouches)
+                {
+                    Log("Toucher {0} ignore : {1} retours < {2} requis.", zone.Level, zone.Touches, MinTouches);
+                    continue;
+                }
+
+                TryEnter(new SweepSignal
+                {
+                    TradeType = tradeType,
+                    Zone = zone,
+                    IsTouch = true,
+                    StopReference = zone.Level,
+                    BufferAtr = TouchStopAtr
+                }, lastClosed);
+            }
         }
 
         // tradeDirection : sens du signal pris sur cette zone (fleche sur le
@@ -517,9 +586,10 @@ namespace cAlgo.Robots
         private void TryEnter(SweepSignal signal, int n)
         {
             var side = signal.Zone.IsHigh ? "swing high" : "swing low";
-            var kind = signal.IsBreakout ? "Cassure" : "Sweep";
-            Log("{0} {1} {2} detecte (cloture {3}, stop au-dela de {4}, {5} retours) -> signal {6}.",
-                kind, side, signal.Zone.Level, Bars.ClosePrices[n], signal.StopReference, signal.Zone.Touches, signal.TradeType);
+            var kind = signal.IsTouch ? "Toucher" : signal.IsBreakout ? "Cassure" : "Sweep";
+            Log("{0} {1} {2} detecte (prix {3}, stop au-dela de {4}, {5} retours) -> signal {6}.",
+                kind, side, signal.Zone.Level, signal.IsTouch ? Symbol.Bid : Bars.ClosePrices[n], signal.StopReference,
+                signal.Zone.Touches, signal.TradeType);
 
             if (Positions.Find(Label, SymbolName) != null)
             {
@@ -577,7 +647,7 @@ namespace cAlgo.Robots
                 return;
 
             var entryPrice = signal.TradeType == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
-            var buffer = atr * StopLossBufferAtr;
+            var buffer = atr * signal.BufferAtr;
             var stopPrice = signal.TradeType == TradeType.Buy ? signal.StopReference - buffer : signal.StopReference + buffer;
             var stopLossPips = Math.Max(Math.Abs(entryPrice - stopPrice) / Symbol.PipSize, MinStopLossPips);
 
