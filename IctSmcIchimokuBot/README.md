@@ -83,6 +83,9 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Heure de fermeture vendredi (UTC) | 20 | Fermeture avancée le vendredi : le marché ferme vers 21h UTC, après il n'y a plus de tick pour fermer avant la réouverture du dimanche |
 | Dernière entrée (heures avant fermeture) | 1 | Pas de nouvelle entrée dans la dernière heure avant la fermeture |
 | Durée max en position (heures) | 0 | Ferme une position qui n'a touché ni SL ni TP après ce délai (0 = désactivé) |
+| Filtre news | true | Bloque les nouvelles entrées autour des annonces US (les positions ouvertes ne sont pas touchées) |
+| Heures news (heure de New York) | 08:30 | Heures des annonces, séparées par des virgules (ex. `08:30,10:00`) ; converties automatiquement en UTC avec l'heure d'été américaine (12:30 UTC en été, 13:30 en hiver) |
+| Minutes avant / après l'annonce | 15 / 15 | Largeur de la fenêtre bloquée |
 | Max Spread (pips) | 50 | Sécurité anti-spread élevé |
 | Créneau Londres | 07h-10h UTC | Killzone ICT classique |
 | Créneau New York | 12h-15h UTC | Killzone ICT classique |

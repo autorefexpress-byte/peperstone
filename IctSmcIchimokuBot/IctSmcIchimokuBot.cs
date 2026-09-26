@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
@@ -176,6 +177,21 @@ namespace cAlgo.Robots
             Description = "Ferme la position apres ce nombre d'heures si ni le SL ni le TP n'ont ete touches. 0 = desactive.")]
         public int MaxHoursInTrade { get; set; }
 
+        // -- Filtre news --
+        [Parameter("Filtre news", Group = "News", DefaultValue = true,
+            Description = "Bloque les nouvelles entrees autour des heures d'annonces US (glissements et spreads extremes). Les positions deja ouvertes ne sont pas touchees.")]
+        public bool UseNewsFilter { get; set; }
+
+        [Parameter("Heures news (heure de New York)", Group = "News", DefaultValue = "08:30",
+            Description = "Heures des annonces en heure de New York, separees par des virgules (ex. 08:30,10:00). Converties en UTC avec le changement d'heure americain : 08:30 NY = 12:30 UTC en ete, 13:30 UTC en hiver.")]
+        public string NewsTimesNewYork { get; set; }
+
+        [Parameter("Minutes avant l'annonce", Group = "News", DefaultValue = 15, MinValue = 0, MaxValue = 240)]
+        public int NewsMinutesBefore { get; set; }
+
+        [Parameter("Minutes apres l'annonce", Group = "News", DefaultValue = 15, MinValue = 0, MaxValue = 240)]
+        public int NewsMinutesAfter { get; set; }
+
         // -- Securite --
         [Parameter("Max Spread (pips)", Group = "Safety", DefaultValue = 50, MinValue = 0)]
         public double MaxSpreadPips { get; set; }
@@ -245,10 +261,12 @@ namespace cAlgo.Robots
 
         private Bars _ichimokuBars;
         private AverageTrueRange _atr;
+        private readonly List<TimeSpan> _newsTimesNy = new List<TimeSpan>();
 
         protected override void OnStart()
         {
             _atr = Indicators.AverageTrueRange(Bars, AtrPeriod, MovingAverageType.Simple);
+            ParseNewsTimes();
             _ichimokuBars = UseHtfIchimoku && IchimokuTimeFrame != TimeFrame ? MarketData.GetBars(IchimokuTimeFrame, SymbolName) : Bars;
 
             Positions.Closed += OnPositionClosed;
@@ -296,6 +314,9 @@ namespace cAlgo.Robots
                 return;
 
             if (Symbol.Spread / Symbol.PipSize > MaxSpreadPips)
+                return;
+
+            if (IsNewsWindow(Server.Time))
                 return;
 
             TryTriggerEntry();
@@ -848,6 +869,60 @@ namespace cAlgo.Robots
         private double PipValuePerUnit()
         {
             return Symbol.TickValue / Symbol.TickSize * Symbol.PipSize;
+        }
+
+        // -- Filtre news -----------------------------------------------------
+
+        private void ParseNewsTimes()
+        {
+            _newsTimesNy.Clear();
+            if (!UseNewsFilter || string.IsNullOrWhiteSpace(NewsTimesNewYork))
+                return;
+
+            foreach (var part in NewsTimesNewYork.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (TimeSpan.TryParse(part.Trim(), CultureInfo.InvariantCulture, out var time) && time < TimeSpan.FromDays(1))
+                    _newsTimesNy.Add(time);
+                else
+                    Print("Heure news ignoree (format attendu HH:MM) : {0}", part);
+            }
+
+            Print("Filtre news : entrees bloquees de {0} min avant a {1} min apres {2} (heure de New York).",
+                NewsMinutesBefore, NewsMinutesAfter, string.Join(", ", _newsTimesNy.ConvertAll(t => t.ToString(@"hh\:mm"))));
+        }
+
+        private bool IsNewsWindow(DateTime timeUtc)
+        {
+            if (!UseNewsFilter || _newsTimesNy.Count == 0)
+                return false;
+
+            var newYork = timeUtc.AddHours(IsUsDaylightSaving(timeUtc) ? -4 : -5);
+            foreach (var newsTime in _newsTimesNy)
+            {
+                var minutesFromNews = (newYork - (newYork.Date + newsTime)).TotalMinutes;
+                if (minutesFromNews >= -NewsMinutesBefore && minutesFromNews < NewsMinutesAfter)
+                    return true;
+            }
+
+            return false;
+        }
+
+        // Heure d'ete US : du 2e dimanche de mars 2h (7h UTC) au 1er dimanche de
+        // novembre 2h (6h UTC). Calcule a la main pour ne pas dependre des
+        // fuseaux horaires installes sur la machine.
+        private static bool IsUsDaylightSaving(DateTime timeUtc)
+        {
+            var year = timeUtc.Year;
+            var start = NthSunday(year, 3, 2).AddHours(7);
+            var end = NthSunday(year, 11, 1).AddHours(6);
+            return timeUtc >= start && timeUtc < end;
+        }
+
+        private static DateTime NthSunday(int year, int month, int n)
+        {
+            var first = new DateTime(year, month, 1);
+            var offset = ((int)DayOfWeek.Sunday - (int)first.DayOfWeek + 7) % 7;
+            return first.AddDays(offset + 7 * (n - 1));
         }
 
         private int CloseHourFor(DateTime timeUtc)
