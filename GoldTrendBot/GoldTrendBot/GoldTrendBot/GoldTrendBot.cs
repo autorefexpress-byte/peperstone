@@ -19,6 +19,8 @@ namespace cAlgo.Robots
     //   - Initial stop loss is placed at a multiple of ATR from entry.
     //   - An ATR-based trailing stop protects profits once the trade moves in
     //     our favour.
+    //   - An optional fixed take-profit (also a multiple of ATR) can be set
+    //     at entry time, in addition to the trailing stop.
     //
     // IMPORTANT: This is a starting point, NOT a guaranteed money-maker.
     // No strategy works 100% of the time. Always test on a DEMO account first,
@@ -53,12 +55,46 @@ namespace cAlgo.Robots
         [Parameter("Trailing Stop (x ATR)", Group = "Risk Management", DefaultValue = 2.0, MinValue = 0.5)]
         public double TrailingStopAtrMultiplier { get; set; }
 
+        [Parameter("Use Fixed Take Profit", Group = "Risk Management", DefaultValue = false,
+            Description = "Optional fixed take-profit set at entry, in addition to the ATR trailing stop. Leave off to rely on the trailing stop / opposite signal only.")]
+        public bool UseTakeProfit { get; set; }
+
+        [Parameter("Take Profit (x ATR)", Group = "Risk Management", DefaultValue = 4.0, MinValue = 0.5)]
+        public double TakeProfitAtrMultiplier { get; set; }
+
         [Parameter("Risk per Trade (%)", Group = "Risk Management", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10)]
         public double RiskPercent { get; set; }
+
+        [Parameter("Allow Min Volume Fallback", Group = "Risk Management", DefaultValue = true,
+            Description = "On a small account the risk-based volume can fall below the broker minimum (0.01 lot). If on, trade the minimum volume instead, but only when its real risk stays under 'Max Risk at Min Volume (%)'.")]
+        public bool AllowMinVolumeFallback { get; set; }
+
+        [Parameter("Max Risk at Min Volume (%)", Group = "Risk Management", DefaultValue = 3.0, MinValue = 0.1, MaxValue = 10,
+            Description = "Hard cap on the real % of balance risked when the minimum volume fallback is used. Entries whose stop would risk more are skipped.")]
+        public double MaxRiskAtMinVolumePercent { get; set; }
 
         [Parameter("Max Spread (pips)", Group = "Safety", DefaultValue = 50, MinValue = 0,
             Description = "Skip new entries if the current spread is wider than this, to avoid trading during illiquid/news spikes.")]
         public double MaxSpreadPips { get; set; }
+
+        [Parameter("Weekly Cycle (Mon-Fri)", Group = "Week (5 days)", DefaultValue = true,
+            Description = "Treat each Monday-Friday week as a separate run: weekly target and loss limit, flat before the weekend.")]
+        public bool UseWeeklyCycle { get; set; }
+
+        [Parameter("Weekly Profit Target (%)", Group = "Week (5 days)", DefaultValue = 10.0, MinValue = 0,
+            Description = "Close everything and stop trading until Monday once equity is up this much on the week. 0 = off.")]
+        public double WeeklyProfitTargetPercent { get; set; }
+
+        [Parameter("Weekly Max Loss (%)", Group = "Week (5 days)", DefaultValue = 10.0, MinValue = 0,
+            Description = "Close everything and stop trading until Monday once equity is down this much on the week. 0 = off.")]
+        public double WeeklyMaxLossPercent { get; set; }
+
+        [Parameter("No Entry Friday After (UTC hour)", Group = "Week (5 days)", DefaultValue = 16, MinValue = 0, MaxValue = 24)]
+        public int FridayNoEntryHour { get; set; }
+
+        [Parameter("Close All Friday At (UTC hour)", Group = "Week (5 days)", DefaultValue = 20, MinValue = 0, MaxValue = 24,
+            Description = "Positions are closed before the weekend gap. 24 = off.")]
+        public int FridayCloseHour { get; set; }
 
         [Parameter("Label", Group = "Misc", DefaultValue = "GoldTrendBot")]
         public string Label { get; set; }
@@ -67,6 +103,11 @@ namespace cAlgo.Robots
         private MovingAverage _slowMa;
         private AverageTrueRange _atr;
         private MovingAverage _atrAverage;
+
+        private DateTime _weekStart = DateTime.MinValue;
+        private double _weekStartBalance;
+        private bool _weekLocked;
+        private int _weekTrades;
 
         protected override void OnStart()
         {
@@ -77,7 +118,39 @@ namespace cAlgo.Robots
             // Smoothed average of the ATR itself, used as the volatility filter baseline.
             _atrAverage = Indicators.MovingAverage(_atr.Result, AtrAveragePeriod, MovingAverageType.Simple);
 
+            Positions.Closed += OnPositionClosed;
+
             Print("GoldTrendBot started on {0} {1}", SymbolName, TimeFrame);
+            Print("Symbol info: PipSize {0}, PipValue {1}, TickSize {2}, TickValue {3}, pip value per unit used {4}, min volume {5} units.",
+                Symbol.PipSize, Symbol.PipValue, Symbol.TickSize, Symbol.TickValue, PipValuePerUnit(), Symbol.VolumeInUnitsMin);
+        }
+
+        protected override void OnTick()
+        {
+            if (!UseWeeklyCycle)
+                return;
+
+            UpdateWeek();
+
+            var now = Server.Time;
+            if (now.DayOfWeek == DayOfWeek.Friday && now.Hour >= FridayCloseHour)
+                CloseAllPositions("Friday close before the weekend");
+
+            if (_weekLocked || _weekStartBalance <= 0)
+                return;
+
+            var weekPercent = (Account.Equity - _weekStartBalance) / _weekStartBalance * 100.0;
+
+            if (WeeklyProfitTargetPercent > 0 && weekPercent >= WeeklyProfitTargetPercent)
+                LockWeek(string.Format("weekly profit target reached (+{0:0.0}%)", weekPercent));
+            else if (WeeklyMaxLossPercent > 0 && weekPercent <= -WeeklyMaxLossPercent)
+                LockWeek(string.Format("weekly max loss reached ({0:0.0}%)", weekPercent));
+        }
+
+        protected override void OnStop()
+        {
+            if (UseWeeklyCycle && _weekStart != DateTime.MinValue)
+                PrintWeekSummary();
         }
 
         protected override void OnBarClosed()
@@ -121,6 +194,9 @@ namespace cAlgo.Robots
             if (!volatilityOk)
                 return; // market too flat right now, skip this bar
 
+            if (!WeeklyEntryAllowed())
+                return;
+
             if (Symbol.Spread / Symbol.PipSize > MaxSpreadPips)
             {
                 Print("Spread too wide ({0} pips), skipping entry.", Symbol.Spread / Symbol.PipSize);
@@ -131,6 +207,18 @@ namespace cAlgo.Robots
                 TryEnter(TradeType.Buy, atrLast);
             else if (bearishCross)
                 TryEnter(TradeType.Sell, atrLast);
+        }
+
+        // Logs each closed trade's result so a backtest log can be analysed
+        // on its own, without the cTrader results tab.
+        private void OnPositionClosed(PositionClosedEventArgs args)
+        {
+            var position = args.Position;
+            if (position.Label != Label || position.SymbolName != SymbolName)
+                return;
+
+            Print("Position closed ({0}, {1}). Net: {2:0.00} {3}. Balance: {4:0.00}.",
+                position.TradeType, args.Reason, position.NetProfit, Account.Asset.Name, Account.Balance);
         }
 
         private void TryEnter(TradeType tradeType, double atrValue)
@@ -149,30 +237,129 @@ namespace cAlgo.Robots
                 return;
             }
 
-            var result = ExecuteMarketOrder(tradeType, SymbolName, volume, Label, stopLossPips, null);
+            double? takeProfitPips = null;
+            if (UseTakeProfit)
+                takeProfitPips = (atrValue * TakeProfitAtrMultiplier) / Symbol.PipSize;
+
+            var result = ExecuteMarketOrder(tradeType, SymbolName, volume, Label, stopLossPips, takeProfitPips);
 
             if (result.IsSuccessful)
-                Print("{0} entry filled. Volume: {1}, SL distance: {2} pips (ATR-based)", tradeType, volume, Math.Round(stopLossPips, 1));
+            {
+                _weekTrades++;
+                Print("{0} entry filled. Volume: {1}, SL distance: {2} pips (ATR-based), TP distance: {3} (ATR-based)",
+                    tradeType, volume, Math.Round(stopLossPips, 1), takeProfitPips.HasValue ? Math.Round(takeProfitPips.Value, 1).ToString() : "none");
+            }
             else
                 Print("Order failed: {0}", result.Error);
         }
 
-        private long CalculatePositionVolume(double stopLossPips)
+        private double CalculatePositionVolume(double stopLossPips)
         {
             var riskAmount = Account.Balance * (RiskPercent / 100.0);
 
-            // Symbol.PipValue = value of 1 pip for 1 unit of volume, in account currency.
-            var rawVolume = riskAmount / (stopLossPips * Symbol.PipValue);
+            var rawVolume = riskAmount / (stopLossPips * PipValuePerUnit());
+
+            // Check before normalizing: NormalizeVolumeInUnits clamps up to the
+            // broker minimum, so a 0.3-unit volume would silently become 1 unit
+            // and bypass the min-volume risk cap.
+            if (rawVolume < Symbol.VolumeInUnitsMin)
+                return MinVolumeIfRiskAcceptable(stopLossPips);
 
             var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
-
-            if (normalized < Symbol.VolumeInUnitsMin)
-                return 0;
 
             if (normalized > Symbol.VolumeInUnitsMax)
                 normalized = Symbol.VolumeInUnitsMax;
 
-            return (long)normalized;
+            return normalized;
+        }
+
+        // Without this, a ~200 EUR account never trades gold: the risk-based
+        // volume is always below 0.01 lot and the entry is skipped.
+        private double MinVolumeIfRiskAcceptable(double stopLossPips)
+        {
+            if (!AllowMinVolumeFallback || Account.Balance <= 0)
+                return 0;
+
+            var minVolume = Symbol.VolumeInUnitsMin;
+            var riskAtMinPercent = stopLossPips * PipValuePerUnit() * minVolume / Account.Balance * 100.0;
+
+            if (riskAtMinPercent > MaxRiskAtMinVolumePercent)
+            {
+                Print("Min volume would risk {0:0.0}% (> {1:0.0}%), skipping entry.", riskAtMinPercent, MaxRiskAtMinVolumePercent);
+                return 0;
+            }
+
+            Print("Risk-based volume below broker minimum: using min volume, real risk {0:0.0}%.", riskAtMinPercent);
+            return minVolume;
+        }
+
+        // Value of one pip for one unit of volume, in account currency, derived
+        // from the tick value. Symbol.PipValue gave a far too small value on
+        // XAUUSD in backtest: with 1% risk on 200 EUR the bot still opened
+        // trades losing 10-15% of the balance, and the risk cap never applied.
+        private double PipValuePerUnit()
+        {
+            return Symbol.TickValue / Symbol.TickSize * Symbol.PipSize;
+        }
+
+        // Each Monday-Friday week is its own run: new starting balance, new
+        // target/loss limits, and a summary line for the week that ended.
+        private void UpdateWeek()
+        {
+            var date = Server.Time.Date;
+            var monday = date.AddDays(-(((int)date.DayOfWeek + 6) % 7));
+            if (monday == _weekStart)
+                return;
+
+            if (_weekStart != DateTime.MinValue)
+                PrintWeekSummary();
+
+            _weekStart = monday;
+            _weekStartBalance = Account.Balance;
+            _weekLocked = false;
+            _weekTrades = 0;
+            Print("New week {0:dd/MM/yyyy}: starting balance {1:0.00}.", monday, _weekStartBalance);
+        }
+
+        private void PrintWeekSummary()
+        {
+            var result = Account.Balance - _weekStartBalance;
+            var percent = _weekStartBalance > 0 ? result / _weekStartBalance * 100.0 : 0;
+            Print("WEEK SUMMARY {0:dd/MM/yyyy}: start {1:0.00}, end {2:0.00}, result {3:+0.00;-0.00} ({4:+0.0;-0.0}%), trades {5}.",
+                _weekStart, _weekStartBalance, Account.Balance, result, percent, _weekTrades);
+        }
+
+        private bool WeeklyEntryAllowed()
+        {
+            if (!UseWeeklyCycle)
+                return true;
+
+            UpdateWeek();
+
+            if (_weekLocked)
+                return false;
+
+            var now = Server.Time;
+            if (now.DayOfWeek == DayOfWeek.Saturday || now.DayOfWeek == DayOfWeek.Sunday)
+                return false;
+
+            return !(now.DayOfWeek == DayOfWeek.Friday && now.Hour >= FridayNoEntryHour);
+        }
+
+        private void LockWeek(string reason)
+        {
+            _weekLocked = true;
+            Print("Week stopped: {0}. No new trades until Monday.", reason);
+            CloseAllPositions(reason);
+        }
+
+        private void CloseAllPositions(string reason)
+        {
+            foreach (var position in Positions.FindAll(Label, SymbolName))
+            {
+                Print("Closing position ({0}).", reason);
+                ClosePosition(position);
+            }
         }
 
         private void ManageTrailingStop()
