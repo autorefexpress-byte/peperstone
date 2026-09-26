@@ -132,6 +132,10 @@ namespace cAlgo.Robots
             Description = "Abandonne la zone si le stop (entree -> au-dela de la zone) depasse ce multiple de l'ATR : zone trop large pour le timeframe. 0 = desactive.")]
         public double MaxStopLossAtr { get; set; }
 
+        [Parameter("SL minimum (pips)", Group = "Stops ATR", DefaultValue = 8.0, MinValue = 0, Step = 0.5,
+            Description = "Plancher du stop loss (tous modes) : un stop de 3 pips sur une petite zone donne un gros volume, a la merci du spread et du moindre glissement (news). Le TP (R x stop) suit.")]
+        public double MinStopLossPips { get; set; }
+
         [Parameter("Autoriser volume minimum (petit compte)", Group = "Risk Management", DefaultValue = true,
             Description = "Sur un petit compte, le volume calcule au risque peut etre inferieur au minimum du broker (0,01 lot). Si active, trade le volume minimum a la place, mais seulement si son risque reel reste sous 'Risque max au volume minimum (%)'.")]
         public bool AllowMinVolumeFallback { get; set; }
@@ -758,6 +762,10 @@ namespace cAlgo.Robots
             var stopLossPips = GetStopLossPips(tradeType, zoneExtreme);
             if (double.IsNaN(stopLossPips))
                 return false;
+
+            // Plancher : on eloigne le stop plutot que de trader une zone minuscule
+            // avec un volume enorme (vu : SL de 2,9 pips pour 7000 unites).
+            stopLossPips = Math.Max(stopLossPips, MinStopLossPips);
             if (stopLossPips <= 0)
                 return false;
 

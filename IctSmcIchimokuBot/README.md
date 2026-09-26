@@ -71,6 +71,7 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Période ATR | 14 | ATR calculé sur le graphique d'exécution |
 | Buffer SL (x ATR) | 0.3 | Marge ajoutée au-delà de la zone pour le stop loss |
 | SL max (x ATR) | 4.0 | Zone abandonnée si le stop dépasse ce multiple de l'ATR (0 = désactivé) — évite les stops démesurés type 677 pips en 5 min |
+| SL minimum (pips) | 8 | Plancher du stop (tous modes) : évite les stops de 3 pips avec un gros volume, balayés par le spread ou un glissement |
 | Buffer Stop Loss (pips) | 20 | Marge fixe au-delà de la zone, utilisée seulement si le mode ATR est désactivé |
 | Autoriser volume minimum (petit compte) | true | Si le volume calculé au risque est sous le minimum du broker (0,01 lot), trade ce minimum… |
 | Risque max au volume minimum (%) | 3.0 | …seulement si le risque réel du stop reste sous ce plafond, sinon l'entrée est ignorée (message dans le log) |
