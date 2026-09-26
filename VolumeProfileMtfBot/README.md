@@ -19,6 +19,7 @@ Dans cette version cTrader :
 - Le profil de volume est **recalculé à chaque clôture de bougie** (`OnBarClosed`), pour que la stratégie soit réellement testable et tradable en continu, en backtest comme en live.
 - Le **volume** utilisé est le *tick volume* cTrader (proxy standard pour le forex/CFD, qui n'ont pas de volume centralisé, contrairement aux marchés sur lesquels tourne TradingView).
 - La sortie partielle **TP1/TP2** (`strategy.exit` avec deux jambes à 50% dans le script Pine) est reproduite avec **deux positions distinctes** ouvertes en même temps (moitié du volume chacune), chacune avec son propre stop loss et son propre take profit. C'est le pattern natif cTrader pour une sortie partielle : le SL/TP est géré côté broker, pas par une surveillance manuelle du prix.
+- La **taille de position est calculée au risque** (% du solde perdu si le stop est touché), et non en % de notionnel comme `default_qty_value` dans le script Pine. Sans levier, un % de notionnel ne dépasse jamais le volume minimum du broker sur un petit compte (avec 200 €, même 100 % n'y arrive pas) : le bot n'aurait jamais tradé. Si le capital ne permet pas deux jambes TP1/TP2, le bot ouvre **une seule position** visant TP2, avec break-even quand le niveau TP1 est atteint.
 - Le **tableau de bord** et l'**histogramme de volume** (boxes colorées) du script Pine ne sont pas reproduits à l'identique : seules les lignes POC/VAH/VAL et un texte de statut condensé (robot actif/en pause, niveaux, pertes consécutives) sont affichés sur le graphique cTrader.
 
 La logique de signal (zones VAL/POC/VAH, bougie directionnelle, filtre de volume, filtres de tendance HTF, RSI, filtre de session, pause après pertes consécutives, break-even après TP1) est conservée fidèlement.
@@ -35,7 +36,7 @@ La logique de signal (zones VAL/POC/VAH, bougie directionnelle, filtre de volume
   - RSI pas déjà en zone opposée (optionnel)
 - **Gestion du risque** :
   - Stop loss et deux niveaux de take profit (TP1/TP2) définis en % du prix
-  - Taille de position en % de l'equity, répartie entre les deux jambes TP1/TP2
+  - Taille de position calculée au risque (% du solde perdu au stop), répartie entre les deux jambes TP1/TP2, ou une seule position si le capital est trop petit pour deux (voir "Petit compte")
   - Break-even automatique sur la jambe TP2 restante une fois TP1 atteint (optionnel)
   - Pause automatique après un nombre configurable de pertes consécutives (évaluées par round TP1+TP2 combiné, pas par jambe)
   - Limite de perte journalière (%) : suspend les nouvelles entrées jusqu'au lendemain (UTC) si la perte cumulée depuis le début de journée dépasse ce seuil
@@ -70,13 +71,34 @@ Même principe que pour GoldTrendBot : ce dépôt reste la source de vérité ve
 | Tolérance zone (%) | 0.15 | Distance max au niveau VP pour considérer "proche" |
 | Multiplicateur volume min | 1.2 | Volume requis vs sa moyenne pour valider un signal |
 | RSI Overbought / Oversold | 65 / 35 | Bornes RSI empêchant un signal à contre-sens |
-| Taille position (% equity) | 10 | Notionnel engagé par trade |
+| Risque par trade (%) | 1.0 | % du solde perdu si le stop est touché (toutes jambes confondues) |
+| Autoriser volume minimum (petit compte) | true | Si le volume calculé est sous 0,01 lot, trade ce minimum… |
+| Risque max au volume minimum (%) | 3.0 | …seulement si son risque réel reste sous ce plafond, sinon l'entrée est ignorée (message dans le log) |
+| Scinder en TP1/TP2 | true | Deux positions comme le script Pine ; bascule automatiquement sur une seule position si le capital ne le permet pas |
 | Stop Loss / TP1 / TP2 (%) | 2.5 / 2.5 / 5.0 | Distances de sortie en % du prix (x4 vs les défauts 5 min d'origine, ratio 1:1:2 conservé — a réaffiner par backtest) |
 | Break-even après TP1 | true | Sécurise la position restante une fois TP1 atteint |
 | Max pertes consécutives | 3 | Nombre de pertes d'affilée avant mise en pause du robot |
 | Perte journalière max (%) | 5.0 | Coupe-circuit : suspend les entrées pour le reste de la journée (UTC) si dépassé |
 | Max Spread (pips) | 50 | Sécurité anti-spread élevé |
 | Filtre de session | true | Limite le trading aux sessions Londres/New York |
+
+## Petit compte (ex. 200 €)
+
+Pour chaque signal, le bot choisit dans cet ordre :
+
+1. **Deux jambes TP1/TP2** avec le volume calculé au risque, si chaque moitié atteint le volume minimum (0,01 lot)
+2. **Deux jambes au volume minimum**, si le risque total reste sous `Risque max au volume minimum (%)`
+3. **Une seule position** (TP = TP2, stop remonté au break-even quand le niveau TP1 est atteint), au volume calculé ou au minimum si son risque reste sous le plafond
+4. Sinon, **entrée ignorée** avec le risque qu'elle aurait pris affiché dans le log
+
+Ordres de grandeur avec 200 € et un stop à 0,4 % (réglages 5 min du script d'origine) :
+
+| Actif | Risque de 0,01 lot au stop | Résultat avec le plafond à 3 % |
+|---|---|---|
+| EURUSD | ≈ 4 € (≈ 2 %) | Une seule position à 0,01 lot |
+| XAUUSD | ≈ 15 € (≈ 7 %) | Entrée ignorée — l'or n'est pas jouable avec ce capital et ce stop |
+
+Au démarrage, le log affiche les caractéristiques du symbole (valeur du pip, volume minimum) pour vérifier ces calculs.
 
 ## Prochaines étapes possibles
 

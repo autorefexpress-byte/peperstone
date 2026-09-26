@@ -30,6 +30,12 @@ namespace cAlgo.Robots
     //     avec son propre stop loss et son propre take profit. C'est le pattern
     //     natif cTrader pour une sortie partielle : le SL/TP est gere par le
     //     broker, pas par une surveillance manuelle du prix bougie par bougie.
+    //   - Taille de position calculee au RISQUE (% du capital perdu si le stop
+    //     est touche) plutot qu'en % de notionnel comme default_qty_value dans le
+    //     script Pine : sans levier, un % de notionnel ne depasse jamais le volume
+    //     minimum du broker sur un petit compte (200 EUR). Si le capital ne permet
+    //     pas deux jambes TP1/TP2, le bot ouvre une seule position (TP2, avec
+    //     break-even quand le niveau TP1 est atteint) - voir TryEnter.
     //   - Le tableau de bord et l'histogramme de volume (boxes colorees) du script
     //     Pine ne sont pas reproduits a l'identique : seules les lignes POC/VAH/VAL
     //     et un texte de statut condense sont affiches sur le graphique cTrader.
@@ -87,9 +93,21 @@ namespace cAlgo.Robots
         public double RsiOversold { get; set; }
 
         // -- Gestion du risque --
-        [Parameter("Taille position (% equity)", Group = "Risk Management", DefaultValue = 10.0, MinValue = 1, MaxValue = 100,
-            Description = "Notionnel engage par trade en % de l'equity, reparti a parts egales entre les deux jambes TP1/TP2 (equivalent de default_qty_value en percent_of_equity dans le script Pine).")]
-        public double PositionSizePercent { get; set; }
+        [Parameter("Risque par trade (%)", Group = "Risk Management", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10,
+            Description = "% du solde perdu si le stop loss est touche (toutes jambes confondues). Le volume est calcule a partir de ce risque et de la distance du stop.")]
+        public double RiskPercent { get; set; }
+
+        [Parameter("Autoriser volume minimum (petit compte)", Group = "Risk Management", DefaultValue = true,
+            Description = "Sur un petit compte, le volume calcule au risque peut etre inferieur au minimum du broker (0,01 lot). Si active, trade le volume minimum a la place, mais seulement si son risque reel reste sous 'Risque max au volume minimum (%)'.")]
+        public bool AllowMinVolumeFallback { get; set; }
+
+        [Parameter("Risque max au volume minimum (%)", Group = "Risk Management", DefaultValue = 3.0, MinValue = 0.1, MaxValue = 10,
+            Description = "Plafond du % reel du capital risque quand le volume minimum est utilise. Les entrees dont le stop risquerait plus sont ignorees.")]
+        public double MaxRiskAtMinVolumePercent { get; set; }
+
+        [Parameter("Scinder en TP1/TP2", Group = "Risk Management", DefaultValue = true,
+            Description = "Ouvre deux positions (moitie TP1, moitie TP2) comme le script Pine. Si le capital ne le permet pas, ou si desactive, ouvre une seule position visant TP2 avec break-even au niveau TP1.")]
+        public bool SplitTakeProfits { get; set; }
 
         // SL/TP1/TP2 elargis x4 par rapport aux defauts 5 min d'origine (0.4/0.4/0.8),
         // pour tenir compte de l'amplitude bien plus grande des bougies 4H (swing
@@ -165,6 +183,10 @@ namespace cAlgo.Robots
         private int _openLegsInRound;
         private double _roundNetProfit;
 
+        // Mode une seule position : prix auquel remonter le stop au break-even
+        // (niveau TP1). NaN quand il n'y a rien a surveiller.
+        private double _singleLegBreakEvenTrigger = double.NaN;
+
         private DateTime _currentDay = DateTime.MinValue;
         private double _dayStartBalance;
         private bool _dailyLossLimitHit;
@@ -191,6 +213,13 @@ namespace cAlgo.Robots
             Positions.Closed += OnPositionClosed;
 
             Print("VolumeProfileMtfBot started on {0} {1}", SymbolName, TimeFrame);
+            Print("Symbole: PipSize {0}, PipValue {1}, TickSize {2}, TickValue {3}, valeur pip/unite utilisee {4}, volume min {5} unites.",
+                Symbol.PipSize, Symbol.PipValue, Symbol.TickSize, Symbol.TickValue, PipValuePerUnit(), Symbol.VolumeInUnitsMin);
+        }
+
+        protected override void OnTick()
+        {
+            ManageSingleLegBreakEven();
         }
 
         protected override void OnBarClosed()
@@ -289,38 +318,44 @@ namespace cAlgo.Robots
             if (stopLossPips <= 0 || tp1Pips <= 0 || tp2Pips <= 0)
                 return;
 
-            var totalVolume = CalculatePositionVolume();
-            if (totalVolume <= 0)
+            if (!TryGetPositionSize(stopLossPips, out var legs, out var legVolume))
+                return;
+
+            if (legs == 1)
             {
-                Print("Volume calcule = 0, entree ignoree (taille de position vs capital).");
+                var result = ExecuteMarketOrder(tradeType, SymbolName, legVolume, Label + Tp2Suffix, stopLossPips, tp2Pips, reason);
+                if (!result.IsSuccessful)
+                {
+                    Print("Echec d'entree: {0}", result.Error);
+                    return;
+                }
+
+                _openLegsInRound = 1;
+                _roundNetProfit = 0;
+
+                var entry = result.Position.EntryPrice;
+                var tp1Distance = tp1Pips * Symbol.PipSize;
+                _singleLegBreakEvenTrigger = UseBreakEven && TakeProfit1Percent < TakeProfit2Percent
+                    ? (tradeType == TradeType.Buy ? entry + tp1Distance : entry - tp1Distance)
+                    : double.NaN;
+
+                Print("{0} entree remplie ({1}), position unique. Volume: {2}, risque: {3:0.0}%, SL: {4} pips, TP: {5} pips{6}",
+                    tradeType, reason, legVolume, RiskPercentFor(legVolume, stopLossPips), Math.Round(stopLossPips, 1), Math.Round(tp2Pips, 1),
+                    double.IsNaN(_singleLegBreakEvenTrigger) ? "" : ", break-even au niveau TP1");
                 return;
             }
 
-            if (totalVolume / 2.0 < Symbol.VolumeInUnitsMin)
-            {
-                Print("Volume trop faible pour scinder en jambes TP1/TP2, entree ignoree.");
-                return;
-            }
-
-            var halfVolume = Symbol.NormalizeVolumeInUnits(totalVolume / 2.0, RoundingMode.Down);
-            var remainderVolume = Symbol.NormalizeVolumeInUnits(totalVolume - halfVolume, RoundingMode.Down);
-
-            if (halfVolume < Symbol.VolumeInUnitsMin || remainderVolume < Symbol.VolumeInUnitsMin)
-            {
-                Print("Volume trop faible pour scinder en jambes TP1/TP2, entree ignoree.");
-                return;
-            }
-
-            var tp1Result = ExecuteMarketOrder(tradeType, SymbolName, halfVolume, Label + Tp1Suffix, stopLossPips, tp1Pips, reason + " (TP1)");
-            var tp2Result = ExecuteMarketOrder(tradeType, SymbolName, remainderVolume, Label + Tp2Suffix, stopLossPips, tp2Pips, reason + " (TP2)");
+            var tp1Result = ExecuteMarketOrder(tradeType, SymbolName, legVolume, Label + Tp1Suffix, stopLossPips, tp1Pips, reason + " (TP1)");
+            var tp2Result = ExecuteMarketOrder(tradeType, SymbolName, legVolume, Label + Tp2Suffix, stopLossPips, tp2Pips, reason + " (TP2)");
 
             if (tp1Result.IsSuccessful && tp2Result.IsSuccessful)
             {
                 _openLegsInRound = 2;
                 _roundNetProfit = 0;
+                _singleLegBreakEvenTrigger = double.NaN;
 
-                Print("{0} entree remplie ({1}). Volume total: {2}, SL: {3} pips, TP1: {4} pips, TP2: {5} pips",
-                    tradeType, reason, totalVolume, Math.Round(stopLossPips, 1), Math.Round(tp1Pips, 1), Math.Round(tp2Pips, 1));
+                Print("{0} entree remplie ({1}). Volume: 2 x {2}, risque: {3:0.0}%, SL: {4} pips, TP1: {5} pips, TP2: {6} pips",
+                    tradeType, reason, legVolume, RiskPercentFor(legVolume * 2, stopLossPips), Math.Round(stopLossPips, 1), Math.Round(tp1Pips, 1), Math.Round(tp2Pips, 1));
             }
             else
             {
@@ -337,22 +372,96 @@ namespace cAlgo.Robots
             }
         }
 
-        private double CalculatePositionVolume()
+        // Choisit le nombre de jambes (2 = TP1/TP2, 1 = position unique) et le
+        // volume de chaque jambe pour que la perte au stop reste sous RiskPercent,
+        // ou sous MaxRiskAtMinVolumePercent quand le volume minimum est force.
+        private bool TryGetPositionSize(double stopLossPips, out int legs, out double legVolume)
         {
-            var notional = Account.Equity * (PositionSizePercent / 100.0);
-            var rawVolume = notional / Symbol.Bid;
-            // Test sur le volume BRUT : NormalizeVolumeInUnits remonte un volume
-            // trop petit au minimum du symbole, ce qui ferait risquer bien plus
-            // que prevu sur un petit compte au lieu d'ignorer l'entree.
-            if (rawVolume < Symbol.VolumeInUnitsMin)
-                return 0;
+            legs = 0;
+            legVolume = 0;
 
-            var normalized = Symbol.NormalizeVolumeInUnits(rawVolume, RoundingMode.Down);
+            if (Account.Balance <= 0)
+                return false;
 
-            if (normalized > Symbol.VolumeInUnitsMax)
-                normalized = Symbol.VolumeInUnitsMax;
+            var minVolume = Symbol.VolumeInUnitsMin;
+            var riskAmount = Account.Balance * (RiskPercent / 100.0);
+            // Volume BRUT (avant normalisation) : NormalizeVolumeInUnits remonte un
+            // volume trop petit au minimum du broker et contournerait le risque.
+            var riskVolume = riskAmount / (stopLossPips * PipValuePerUnit());
 
-            return normalized;
+            if (SplitTakeProfits)
+            {
+                if (riskVolume / 2.0 >= minVolume)
+                {
+                    legs = 2;
+                    legVolume = Math.Min(Symbol.NormalizeVolumeInUnits(riskVolume / 2.0, RoundingMode.Down), Symbol.VolumeInUnitsMax);
+                    return true;
+                }
+
+                if (AllowMinVolumeFallback && RiskPercentFor(minVolume * 2, stopLossPips) <= MaxRiskAtMinVolumePercent)
+                {
+                    legs = 2;
+                    legVolume = minVolume;
+                    return true;
+                }
+            }
+
+            if (riskVolume >= minVolume)
+            {
+                legs = 1;
+                legVolume = Math.Min(Symbol.NormalizeVolumeInUnits(riskVolume, RoundingMode.Down), Symbol.VolumeInUnitsMax);
+                return true;
+            }
+
+            var riskAtMin = RiskPercentFor(minVolume, stopLossPips);
+            if (AllowMinVolumeFallback && riskAtMin <= MaxRiskAtMinVolumePercent)
+            {
+                legs = 1;
+                legVolume = minVolume;
+                return true;
+            }
+
+            Print("Le volume minimum risquerait {0:0.0}% du solde (> {1:0.0}%{2}), entree ignoree.",
+                riskAtMin, AllowMinVolumeFallback ? MaxRiskAtMinVolumePercent : RiskPercent,
+                AllowMinVolumeFallback ? "" : ", volume minimum non autorise");
+            return false;
+        }
+
+        private double RiskPercentFor(double volume, double stopLossPips)
+        {
+            return stopLossPips * PipValuePerUnit() * volume / Account.Balance * 100.0;
+        }
+
+        // Valeur d'un pip pour une unite de volume, en devise du compte, derivee
+        // de la tick value (Symbol.PipValue donnait une valeur bien trop faible
+        // sur XAUUSD en backtest, cf. GoldTrendBot).
+        private double PipValuePerUnit()
+        {
+            return Symbol.TickValue / Symbol.TickSize * Symbol.PipSize;
+        }
+
+        private void ManageSingleLegBreakEven()
+        {
+            if (double.IsNaN(_singleLegBreakEvenTrigger))
+                return;
+
+            var position = Positions.Find(Label + Tp2Suffix, SymbolName);
+            if (position == null || _openLegsInRound != 1)
+            {
+                _singleLegBreakEvenTrigger = double.NaN;
+                return;
+            }
+
+            var reached = position.TradeType == TradeType.Buy
+                ? Symbol.Bid >= _singleLegBreakEvenTrigger
+                : Symbol.Ask <= _singleLegBreakEvenTrigger;
+
+            if (!reached)
+                return;
+
+            ModifyPosition(position, position.EntryPrice, position.TakeProfit);
+            _singleLegBreakEvenTrigger = double.NaN;
+            Print("Niveau TP1 atteint, stop remonte au break-even.");
         }
 
         private bool HasOpenPosition()
@@ -395,6 +504,7 @@ namespace cAlgo.Robots
                     _roundNetProfit, Account.Asset.Name, _consecutiveLosses, MaxConsecutiveLosses);
 
                 _roundNetProfit = 0;
+                _singleLegBreakEvenTrigger = double.NaN;
             }
 
             if (isTp1 && UseBreakEven && position.NetProfit > 0)
