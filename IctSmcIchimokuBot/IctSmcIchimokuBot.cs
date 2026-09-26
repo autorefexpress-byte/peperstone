@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using cAlgo.API;
+using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
 
 namespace cAlgo.Robots
@@ -107,8 +108,25 @@ namespace cAlgo.Robots
         [Parameter("Risk:Reward (R)", Group = "Risk Management", DefaultValue = 2.0, MinValue = 0.5, MaxValue = 10)]
         public double RiskRewardRatio { get; set; }
 
-        [Parameter("Buffer Stop Loss (pips)", Group = "Risk Management", DefaultValue = 20, MinValue = 0)]
+        [Parameter("Buffer Stop Loss (pips)", Group = "Risk Management", DefaultValue = 20, MinValue = 0,
+            Description = "Marge au-dela de la zone pour le stop loss. Utilise seulement si le mode ATR est desactive.")]
         public double StopLossBufferPips { get; set; }
+
+        // -- Stops en multiples d'ATR --
+        [Parameter("Stops bases sur l'ATR", Group = "Stops ATR", DefaultValue = true,
+            Description = "Si active, le buffer du stop loss est un multiple de l'ATR du graphique (au lieu d'un nombre de pips fixe) et les zones qui donneraient un stop trop large sont abandonnees.")]
+        public bool UseAtrStops { get; set; }
+
+        [Parameter("Periode ATR", Group = "Stops ATR", DefaultValue = 14, MinValue = 2, MaxValue = 200)]
+        public int AtrPeriod { get; set; }
+
+        [Parameter("Buffer SL (x ATR)", Group = "Stops ATR", DefaultValue = 0.3, MinValue = 0, MaxValue = 5, Step = 0.05,
+            Description = "Marge ajoutee au-dela de la zone OB/FVG pour le stop loss, en multiple de l'ATR.")]
+        public double StopLossBufferAtr { get; set; }
+
+        [Parameter("SL max (x ATR)", Group = "Stops ATR", DefaultValue = 4.0, MinValue = 0, MaxValue = 50, Step = 0.5,
+            Description = "Abandonne la zone si le stop (entree -> au-dela de la zone) depasse ce multiple de l'ATR : zone trop large pour le timeframe. 0 = desactive.")]
+        public double MaxStopLossAtr { get; set; }
 
         [Parameter("Autoriser volume minimum (petit compte)", Group = "Risk Management", DefaultValue = true,
             Description = "Sur un petit compte, le volume calcule au risque peut etre inferieur au minimum du broker (0,01 lot). Si active, trade le volume minimum a la place, mais seulement si son risque reel reste sous 'Risque max au volume minimum (%)'.")]
@@ -198,9 +216,11 @@ namespace cAlgo.Robots
         private bool _dailyLossLimitHit;
 
         private Bars _ichimokuBars;
+        private AverageTrueRange _atr;
 
         protected override void OnStart()
         {
+            _atr = Indicators.AverageTrueRange(Bars, AtrPeriod, MovingAverageType.Simple);
             _ichimokuBars = UseHtfIchimoku && IchimokuTimeFrame != TimeFrame ? MarketData.GetBars(IchimokuTimeFrame, SymbolName) : Bars;
 
             Positions.Closed += OnPositionClosed;
@@ -603,6 +623,12 @@ namespace cAlgo.Robots
                             {
                                 // Ne consomme la zone que si l'ordre part reellement -
                                 // un echec technique la laisse active pour retenter.
+                                if (IsStopTooWide(TradeType.Buy, _pendingBuySetup.ZoneLow))
+                                {
+                                    _pendingBuySetup.Active = false;
+                                    return;
+                                }
+
                                 if (ExecuteEntry(TradeType.Buy, _pendingBuySetup.ZoneLow, "Retracement OB/FVG haussier"))
                                     _pendingBuySetup.Active = false;
                                 return;
@@ -646,6 +672,12 @@ namespace cAlgo.Robots
 
                             if (validRejection && bearishBias)
                             {
+                                if (IsStopTooWide(TradeType.Sell, _pendingSellSetup.ZoneHigh))
+                                {
+                                    _pendingSellSetup.Active = false;
+                                    return;
+                                }
+
                                 if (ExecuteEntry(TradeType.Sell, _pendingSellSetup.ZoneHigh, "Retracement OB/FVG baissier"))
                                     _pendingSellSetup.Active = false;
                             }
@@ -659,13 +691,41 @@ namespace cAlgo.Robots
             }
         }
 
-        private bool ExecuteEntry(TradeType tradeType, double zoneExtreme, string reason)
+        private double GetStopLossPips(TradeType tradeType, double zoneExtreme)
         {
-            var slBufferPrice = StopLossBufferPips * Symbol.PipSize;
+            var slBufferPrice = UseAtrStops ? _atr.Result.Last(1) * StopLossBufferAtr : StopLossBufferPips * Symbol.PipSize;
             var entryPrice = tradeType == TradeType.Buy ? Symbol.Ask : Symbol.Bid;
             var stopLossPrice = tradeType == TradeType.Buy ? zoneExtreme - slBufferPrice : zoneExtreme + slBufferPrice;
 
-            var stopLossPips = Math.Abs(entryPrice - stopLossPrice) / Symbol.PipSize;
+            return Math.Abs(entryPrice - stopLossPrice) / Symbol.PipSize;
+        }
+
+        // Zone OB/FVG trop large pour le timeframe (ex. stop de 677 pips sur un
+        // graphique 5 min XAUUSD) : on l'abandonne plutot que de prendre un stop
+        // demesure ou de la retenter a chaque bougie.
+        private bool IsStopTooWide(TradeType tradeType, double zoneExtreme)
+        {
+            if (!UseAtrStops || MaxStopLossAtr <= 0)
+                return false;
+
+            var atrPips = _atr.Result.Last(1) / Symbol.PipSize;
+            if (double.IsNaN(atrPips) || atrPips <= 0)
+                return false;
+
+            var stopLossPips = GetStopLossPips(tradeType, zoneExtreme);
+            if (stopLossPips <= atrPips * MaxStopLossAtr)
+                return false;
+
+            Print("Zone {0} abandonnee : stop de {1:0.0} pips > {2:0.0} x ATR ({3:0.0} pips).",
+                tradeType, stopLossPips, MaxStopLossAtr, atrPips * MaxStopLossAtr);
+            return true;
+        }
+
+        private bool ExecuteEntry(TradeType tradeType, double zoneExtreme, string reason)
+        {
+            var stopLossPips = GetStopLossPips(tradeType, zoneExtreme);
+            if (double.IsNaN(stopLossPips))
+                return false;
             if (stopLossPips <= 0)
                 return false;
 

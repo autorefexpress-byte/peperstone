@@ -66,7 +66,11 @@ Même principe que les autres bots du dépôt : ce dépôt reste la source de v�
 | Entrée au premier contact uniquement | true | Abandonne la zone si le premier contact ne donne pas de rejet valide |
 | Risque par trade (%) | 1.0 | % du capital risqué par trade |
 | Risk:Reward (R) | 2.0 | Take profit = distance du stop × ce multiple |
-| Buffer Stop Loss (pips) | 20 | Marge ajoutée au-delà de la zone pour le stop loss |
+| Stops basés sur l'ATR | true | Buffer du stop en multiple d'ATR au lieu de pips fixes, et abandon des zones trop larges |
+| Période ATR | 14 | ATR calculé sur le graphique d'exécution |
+| Buffer SL (x ATR) | 0.3 | Marge ajoutée au-delà de la zone pour le stop loss |
+| SL max (x ATR) | 4.0 | Zone abandonnée si le stop dépasse ce multiple de l'ATR (0 = désactivé) — évite les stops démesurés type 677 pips en 5 min |
+| Buffer Stop Loss (pips) | 20 | Marge fixe au-delà de la zone, utilisée seulement si le mode ATR est désactivé |
 | Autoriser volume minimum (petit compte) | true | Si le volume calculé au risque est sous le minimum du broker (0,01 lot), trade ce minimum… |
 | Risque max au volume minimum (%) | 3.0 | …seulement si le risque réel du stop reste sous ce plafond, sinon l'entrée est ignorée (message dans le log) |
 | Break-even à 1R | true | Sécurise la position une fois 1R de profit atteint |
