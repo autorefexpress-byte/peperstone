@@ -71,11 +71,15 @@ Même principe que pour GoldTrendBot : ce dépôt reste la source de vérité ve
 | Tolérance zone (%) | 0.15 | Distance max au niveau VP pour considérer "proche" |
 | Multiplicateur volume min | 1.2 | Volume requis vs sa moyenne pour valider un signal |
 | RSI Overbought / Oversold | 65 / 35 | Bornes RSI empêchant un signal à contre-sens |
+| Lot fixe (0 = calcul au risque) | 0 | Si > 0 (ex. 0.01), trade toujours ce lot au lieu du calcul au risque ; le risque réel est affiché dans le log |
 | Risque par trade (%) | 1.0 | % du solde perdu si le stop est touché (toutes jambes confondues) |
 | Autoriser volume minimum (petit compte) | true | Si le volume calculé est sous 0,01 lot, trade ce minimum… |
 | Risque max au volume minimum (%) | 3.0 | …seulement si son risque réel reste sous ce plafond, sinon l'entrée est ignorée (message dans le log) |
 | Scinder en TP1/TP2 | true | Deux positions comme le script Pine ; bascule automatiquement sur une seule position si le capital ne le permet pas |
 | Stop Loss / TP1 / TP2 (%) | 2.5 / 2.5 / 5.0 | Distances de sortie en % du prix (x4 vs les défauts 5 min d'origine, ratio 1:1:2 conservé — a réaffiner par backtest) |
+| Fermer en fin de journée | true | Ferme les positions à l'heure de fermeture et bloque les entrées après : rien d'ouvert la nuit ni le week-end. À désactiver pour du swing en 4H |
+| Heure de fermeture (UTC) | 21 | Heure de cette fermeture quotidienne |
+| Durée max en position (heures) | 0 | Ferme une position qui n'a touché ni SL ni TP après ce délai (0 = désactivé) |
 | Break-even après TP1 | true | Sécurise la position restante une fois TP1 atteint |
 | Max pertes consécutives | 3 | Nombre de pertes d'affilée avant mise en pause du robot |
 | Perte journalière max (%) | 5.0 | Coupe-circuit : suspend les entrées pour le reste de la journée (UTC) si dépassé |

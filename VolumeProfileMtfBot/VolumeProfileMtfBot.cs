@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
@@ -93,6 +94,10 @@ namespace cAlgo.Robots
         public double RsiOversold { get; set; }
 
         // -- Gestion du risque --
+        [Parameter("Lot fixe (0 = calcul au risque)", Group = "Risk Management", DefaultValue = 0.0, MinValue = 0.0, Step = 0.01,
+            Description = "Si > 0, trade toujours ce nombre de lots (reparti entre TP1/TP2 si possible) au lieu du calcul au risque. Le risque reel est affiche dans le log a chaque entree.")]
+        public double FixedLots { get; set; }
+
         [Parameter("Risque par trade (%)", Group = "Risk Management", DefaultValue = 1.0, MinValue = 0.1, MaxValue = 10,
             Description = "% du solde perdu si le stop loss est touche (toutes jambes confondues). Le volume est calcule a partir de ce risque et de la distance du stop.")]
         public double RiskPercent { get; set; }
@@ -134,6 +139,18 @@ namespace cAlgo.Robots
         [Parameter("Perte journaliere max (%)", Group = "Risk Management", DefaultValue = 5.0, MinValue = 0.5, MaxValue = 50.0, Step = 0.5,
             Description = "Suspend les nouvelles entrees jusqu'au lendemain (UTC) si la perte cumulee depuis le debut de la journee depasse ce % du solde de debut de journee.")]
         public double MaxDailyLossPercent { get; set; }
+
+        // -- Sorties par le temps --
+        [Parameter("Fermer en fin de journee", Group = "Sortie", DefaultValue = true,
+            Description = "Ferme les positions a l'heure ci-dessous et bloque les nouvelles entrees apres cette heure : pas de position la nuit ni le week-end (swap, gaps). A desactiver pour du swing sur 4H.")]
+        public bool UseDailyClose { get; set; }
+
+        [Parameter("Heure de fermeture (UTC)", Group = "Sortie", DefaultValue = 21, MinValue = 1, MaxValue = 23)]
+        public int DailyCloseHour { get; set; }
+
+        [Parameter("Duree max en position (heures)", Group = "Sortie", DefaultValue = 0, MinValue = 0, MaxValue = 500,
+            Description = "Ferme la position apres ce nombre d'heures si ni le SL ni le TP n'ont ete touches. 0 = desactive.")]
+        public int MaxHoursInTrade { get; set; }
 
         // -- Securite --
         [Parameter("Max Spread (pips)", Group = "Safety", DefaultValue = 50, MinValue = 0,
@@ -219,6 +236,7 @@ namespace cAlgo.Robots
 
         protected override void OnTick()
         {
+            ManageTimeExits();
             ManageSingleLegBreakEven();
         }
 
@@ -240,6 +258,9 @@ namespace cAlgo.Robots
                 return;
 
             if (!IsSessionOk(barTimeUtc))
+                return;
+
+            if (UseDailyClose && Server.Time.Hour >= DailyCloseHour)
                 return;
 
             if (_consecutiveLosses >= MaxConsecutiveLosses)
@@ -384,6 +405,31 @@ namespace cAlgo.Robots
                 return false;
 
             var minVolume = Symbol.VolumeInUnitsMin;
+
+            if (FixedLots > 0)
+            {
+                var fixedVolume = Math.Min(Symbol.NormalizeVolumeInUnits(Symbol.QuantityToVolumeInUnits(FixedLots), RoundingMode.Down), Symbol.VolumeInUnitsMax);
+                if (Symbol.QuantityToVolumeInUnits(FixedLots) < minVolume)
+                {
+                    Print("Lot fixe {0} inferieur au minimum du broker ({1} lot), entree ignoree.", FixedLots, Symbol.VolumeInUnitsToQuantity(minVolume));
+                    return false;
+                }
+
+                var fixedHalf = Symbol.NormalizeVolumeInUnits(fixedVolume / 2.0, RoundingMode.Down);
+                if (SplitTakeProfits && fixedVolume / 2.0 >= minVolume)
+                {
+                    legs = 2;
+                    legVolume = fixedHalf;
+                }
+                else
+                {
+                    legs = 1;
+                    legVolume = fixedVolume;
+                }
+
+                return true;
+            }
+
             var riskAmount = Account.Balance * (RiskPercent / 100.0);
             // Volume BRUT (avant normalisation) : NormalizeVolumeInUnits remonte un
             // volume trop petit au minimum du broker et contournerait le risque.
@@ -438,6 +484,35 @@ namespace cAlgo.Robots
         private double PipValuePerUnit()
         {
             return Symbol.TickValue / Symbol.TickSize * Symbol.PipSize;
+        }
+
+        // Ferme les jambes du bot en fin de journee (et celles ouvertes un jour
+        // precedent, ex. apres un redemarrage) et au-dela de la duree max.
+        private void ManageTimeExits()
+        {
+            if (!UseDailyClose && MaxHoursInTrade <= 0)
+                return;
+
+            var now = Server.Time;
+            foreach (var position in Positions.ToArray())
+            {
+                if (position.SymbolName != SymbolName)
+                    continue;
+                if (position.Label != Label + Tp1Suffix && position.Label != Label + Tp2Suffix)
+                    continue;
+
+                string reason = null;
+                if (UseDailyClose && (now.Hour >= DailyCloseHour || position.EntryTime.Date < now.Date))
+                    reason = string.Format("fin de journee ({0}h UTC)", DailyCloseHour);
+                else if (MaxHoursInTrade > 0 && now - position.EntryTime >= TimeSpan.FromHours(MaxHoursInTrade))
+                    reason = string.Format("duree max atteinte ({0}h)", MaxHoursInTrade);
+
+                if (reason == null)
+                    continue;
+
+                Print("Fermeture {0} : {1}.", position.Label, reason);
+                ClosePosition(position);
+            }
         }
 
         private void ManageSingleLegBreakEven()
