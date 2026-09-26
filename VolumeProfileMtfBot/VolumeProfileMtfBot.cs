@@ -114,6 +114,28 @@ namespace cAlgo.Robots
             Description = "Ouvre deux positions (moitie TP1, moitie TP2) comme le script Pine. Si le capital ne le permet pas, ou si desactive, ouvre une seule position visant TP2 avec break-even au niveau TP1.")]
         public bool SplitTakeProfits { get; set; }
 
+        // -- SL/TP en multiples d'ATR --
+        [Parameter("SL/TP bases sur l'ATR", Group = "Stops ATR", DefaultValue = true,
+            Description = "Si active, SL/TP1/TP2 = multiples de l'ATR du graphique : les distances s'adaptent a la volatilite, au timeframe et a l'actif. Sinon, les % du groupe Risk Management sont utilises.")]
+        public bool UseAtrStops { get; set; }
+
+        [Parameter("Periode ATR", Group = "Stops ATR", DefaultValue = 14, MinValue = 2, MaxValue = 200)]
+        public int AtrPeriod { get; set; }
+
+        [Parameter("SL (x ATR)", Group = "Stops ATR", DefaultValue = 1.5, MinValue = 0.1, MaxValue = 20, Step = 0.1)]
+        public double StopLossAtrMultiplier { get; set; }
+
+        [Parameter("TP1 (x ATR)", Group = "Stops ATR", DefaultValue = 1.5, MinValue = 0.1, MaxValue = 20, Step = 0.1)]
+        public double TakeProfit1AtrMultiplier { get; set; }
+
+        [Parameter("TP2 (x ATR)", Group = "Stops ATR", DefaultValue = 3.0, MinValue = 0.1, MaxValue = 40, Step = 0.1)]
+        public double TakeProfit2AtrMultiplier { get; set; }
+
+        [Parameter("SL minimum (pips)", Group = "Stops ATR", DefaultValue = 5.0, MinValue = 0, Step = 0.5,
+            Description = "Plancher du stop loss en mode ATR, pour qu'un marche tres calme ne donne pas un stop plus petit que le bruit / le spread. TP1 et TP2 sont agrandis dans la meme proportion.")]
+        public double MinStopLossPips { get; set; }
+
+        // Mode % (si "SL/TP bases sur l'ATR" est desactive).
         // SL/TP1/TP2 elargis x4 par rapport aux defauts 5 min d'origine (0.4/0.4/0.8),
         // pour tenir compte de l'amplitude bien plus grande des bougies 4H (swing
         // trading). Ratio 1:1:2 conserve - a reaffiner par backtest, pas une
@@ -184,6 +206,7 @@ namespace cAlgo.Robots
         private MovingAverage _htf2Ema20;
         private MovingAverage _htf2Ema50;
         private RelativeStrengthIndex _rsi;
+        private AverageTrueRange _atr;
         private MovingAverage _volumeAverage;
 
         private double _poc = double.NaN;
@@ -211,6 +234,7 @@ namespace cAlgo.Robots
         protected override void OnStart()
         {
             _rsi = Indicators.RelativeStrengthIndex(Bars.ClosePrices, RsiPeriod);
+            _atr = Indicators.AverageTrueRange(Bars, AtrPeriod, MovingAverageType.Simple);
             _volumeAverage = Indicators.MovingAverage(Bars.TickVolumes, 20, MovingAverageType.Simple);
 
             if (UseHtf1Filter)
@@ -332,9 +356,32 @@ namespace cAlgo.Robots
 
         private void TryEnter(TradeType tradeType, double closePrice, string reason)
         {
-            var stopLossPips = (closePrice * StopLossPercent / 100.0) / Symbol.PipSize;
-            var tp1Pips = (closePrice * TakeProfit1Percent / 100.0) / Symbol.PipSize;
-            var tp2Pips = (closePrice * TakeProfit2Percent / 100.0) / Symbol.PipSize;
+            double stopLossPips, tp1Pips, tp2Pips;
+            if (UseAtrStops)
+            {
+                var atrPips = _atr.Result.Last(1) / Symbol.PipSize;
+                if (double.IsNaN(atrPips) || atrPips <= 0)
+                    return;
+
+                stopLossPips = atrPips * StopLossAtrMultiplier;
+                tp1Pips = atrPips * TakeProfit1AtrMultiplier;
+                tp2Pips = atrPips * TakeProfit2AtrMultiplier;
+
+                // Plancher : on agrandit SL et TP ensemble pour garder le ratio R.
+                if (stopLossPips < MinStopLossPips)
+                {
+                    var scale = MinStopLossPips / stopLossPips;
+                    stopLossPips *= scale;
+                    tp1Pips *= scale;
+                    tp2Pips *= scale;
+                }
+            }
+            else
+            {
+                stopLossPips = (closePrice * StopLossPercent / 100.0) / Symbol.PipSize;
+                tp1Pips = (closePrice * TakeProfit1Percent / 100.0) / Symbol.PipSize;
+                tp2Pips = (closePrice * TakeProfit2Percent / 100.0) / Symbol.PipSize;
+            }
 
             if (stopLossPips <= 0 || tp1Pips <= 0 || tp2Pips <= 0)
                 return;
@@ -356,7 +403,7 @@ namespace cAlgo.Robots
 
                 var entry = result.Position.EntryPrice;
                 var tp1Distance = tp1Pips * Symbol.PipSize;
-                _singleLegBreakEvenTrigger = UseBreakEven && TakeProfit1Percent < TakeProfit2Percent
+                _singleLegBreakEvenTrigger = UseBreakEven && tp1Pips < tp2Pips
                     ? (tradeType == TradeType.Buy ? entry + tp1Distance : entry - tp1Distance)
                     : double.NaN;
 

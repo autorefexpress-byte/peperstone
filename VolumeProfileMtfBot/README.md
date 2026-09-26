@@ -76,7 +76,11 @@ Même principe que pour GoldTrendBot : ce dépôt reste la source de vérité ve
 | Autoriser volume minimum (petit compte) | true | Si le volume calculé est sous 0,01 lot, trade ce minimum… |
 | Risque max au volume minimum (%) | 3.0 | …seulement si son risque réel reste sous ce plafond, sinon l'entrée est ignorée (message dans le log) |
 | Scinder en TP1/TP2 | true | Deux positions comme le script Pine ; bascule automatiquement sur une seule position si le capital ne le permet pas |
-| Stop Loss / TP1 / TP2 (%) | 2.5 / 2.5 / 5.0 | Distances de sortie en % du prix (x4 vs les défauts 5 min d'origine, ratio 1:1:2 conservé — a réaffiner par backtest) |
+| SL/TP basés sur l'ATR | true | SL/TP1/TP2 en multiples de l'ATR du graphique : s'adaptent tout seuls à la volatilité, au timeframe et à l'actif (EURUSD, or…) |
+| Période ATR | 14 | Nombre de bougies pour l'ATR |
+| SL / TP1 / TP2 (x ATR) | 1.5 / 1.5 / 3.0 | Distances en multiples d'ATR (ratio 1:1:2 du script d'origine) |
+| SL minimum (pips) | 5 | Plancher du stop en marché très calme ; TP1/TP2 sont agrandis dans la même proportion |
+| Stop Loss / TP1 / TP2 (%) | 2.5 / 2.5 / 5.0 | Utilisés seulement si le mode ATR est désactivé. Distances en % du prix (x4 vs les défauts 5 min d'origine, ratio 1:1:2 conservé — a réaffiner par backtest) |
 | Fermer en fin de journée | true | Ferme les positions à l'heure de fermeture et bloque les entrées après : rien d'ouvert la nuit ni le week-end. À désactiver pour du swing en 4H |
 | Heure de fermeture (UTC) | 21 | Heure de cette fermeture quotidienne |
 | Durée max en position (heures) | 0 | Ferme une position qui n'a touché ni SL ni TP après ce délai (0 = désactivé) |
