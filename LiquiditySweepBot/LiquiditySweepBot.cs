@@ -56,11 +56,16 @@ namespace cAlgo.Robots
             Description = "Nombre minimum de bougies revenues dans la zone avant le sweep (equivalent du filtre 'Count' de l'indicateur). 0 = toutes les zones.")]
         public int MinTouches { get; set; }
 
-        [Parameter("Age max d'une zone (bougies)", Group = "Liquidity Swings", DefaultValue = 300, MinValue = 20, MaxValue = 5000)]
+        [Parameter("Age max d'une zone (bougies)", Group = "Liquidity Swings", DefaultValue = 1000, MinValue = 20, MaxValue = 10000,
+            Description = "Zones plus anciennes oubliees. 1000 bougies = environ 3,5 jours en 5 min, 10 jours en 15 min.")]
         public int MaxZoneAgeBars { get; set; }
 
-        [Parameter("Zones suivies par cote", Group = "Liquidity Swings", DefaultValue = 5, MinValue = 1, MaxValue = 50)]
+        [Parameter("Zones suivies par cote", Group = "Liquidity Swings", DefaultValue = 10, MinValue = 1, MaxValue = 50)]
         public int MaxZonesPerSide { get; set; }
+
+        [Parameter("Logs detailles", Group = "Liquidity Swings", DefaultValue = true,
+            Description = "Ecrit dans le log chaque franchissement de zone et la raison exacte quand aucun trade n'est pris.")]
+        public bool VerboseLogs { get; set; }
 
         [Parameter("Afficher les zones", Group = "Liquidity Swings", DefaultValue = true)]
         public bool DrawZones { get; set; }
@@ -357,12 +362,15 @@ namespace cAlgo.Robots
                 else if (high > zone.Top && close < zone.Top)
                 {
                     // Plusieurs niveaux chasses par la meme meche : on garde le plus haut.
-                    if (zone.Touches >= MinTouches && (signal == null || zone.Top > signal.Zone.Top))
+                    if (zone.Touches < MinTouches)
+                        Log("Sweep swing high {0} ignore : {1} retours < {2} requis.", zone.Top, zone.Touches, MinTouches);
+                    else if (signal == null || zone.Top > signal.Zone.Top)
                         signal = new SweepSignal { TradeType = TradeType.Sell, Zone = zone, SweepExtreme = high };
                     Deactivate(zone, n, true);
                 }
                 else if (close > zone.Top)
                 {
+                    Log("Swing high {0} casse en cloture ({1}) : vraie cassure, pas un sweep -> pas de trade.", zone.Top, close);
                     Deactivate(zone, n, false);
                 }
                 else if (low < zone.Top && high > zone.Bottom)
@@ -380,12 +388,15 @@ namespace cAlgo.Robots
                 }
                 else if (low < zone.Bottom && close > zone.Bottom)
                 {
-                    if (zone.Touches >= MinTouches && (buySignal == null || zone.Bottom < buySignal.Zone.Bottom))
+                    if (zone.Touches < MinTouches)
+                        Log("Sweep swing low {0} ignore : {1} retours < {2} requis.", zone.Bottom, zone.Touches, MinTouches);
+                    else if (buySignal == null || zone.Bottom < buySignal.Zone.Bottom)
                         buySignal = new SweepSignal { TradeType = TradeType.Buy, Zone = zone, SweepExtreme = low };
                     Deactivate(zone, n, true);
                 }
                 else if (close < zone.Bottom)
                 {
+                    Log("Swing low {0} casse en cloture ({1}) : vraie cassure, pas un sweep -> pas de trade.", zone.Bottom, close);
                     Deactivate(zone, n, false);
                 }
                 else if (low < zone.Top && high > zone.Bottom)
@@ -402,7 +413,10 @@ namespace cAlgo.Robots
 
             // Une bougie qui chasse les deux cotes a la fois n'est pas un signal clair.
             if (signal != null && buySignal != null)
+            {
+                Log("Sweep des deux cotes sur la meme bougie : signal ambigu, pas de trade.");
                 return null;
+            }
 
             return signal ?? buySignal;
         }
@@ -458,30 +472,60 @@ namespace cAlgo.Robots
 
         private void TryEnter(SweepSignal signal, int n)
         {
+            var side = signal.TradeType == TradeType.Sell ? "swing high" : "swing low";
+            Log("Sweep {0} {1} detecte (meche {2}, cloture {3}, {4} retours) -> signal {5}.",
+                side, signal.Zone.Level, signal.SweepExtreme, Bars.ClosePrices[n], signal.Zone.Touches, signal.TradeType);
+
             if (Positions.Find(Label, SymbolName) != null)
+            {
+                Log("  -> pas de trade : une position est deja ouverte.");
                 return;
+            }
 
             var hour = Server.Time.Hour;
             if (hour < SessionStartHour || hour >= SessionEndHour)
+            {
+                Log("  -> pas de trade : hors creneau d'entree ({0}h-{1}h UTC, il est {2:HH:mm} UTC).", SessionStartHour, SessionEndHour, Server.Time);
                 return;
+            }
 
             if (UseDailyClose && hour >= CloseHourFor(Server.Time) - NoEntryHoursBeforeClose)
+            {
+                Log("  -> pas de trade : trop proche de la fermeture de fin de journee.");
                 return;
+            }
 
-            if (_consecutiveLosses >= MaxConsecutiveLosses || _dailyLossLimitHit)
+            if (_consecutiveLosses >= MaxConsecutiveLosses)
+            {
+                Log("  -> pas de trade : pause apres {0} pertes consecutives.", _consecutiveLosses);
                 return;
+            }
 
-            if (Symbol.Spread / Symbol.PipSize > MaxSpreadPips)
+            if (_dailyLossLimitHit)
+            {
+                Log("  -> pas de trade : limite de perte journaliere atteinte.");
                 return;
+            }
+
+            var spreadPips = Symbol.Spread / Symbol.PipSize;
+            if (spreadPips > MaxSpreadPips)
+            {
+                Log("  -> pas de trade : spread {0:0.0} pips > {1} max.", spreadPips, MaxSpreadPips);
+                return;
+            }
 
             if (IsNewsWindow(Server.Time))
             {
-                Print("Sweep {0} ignore : fenetre news.", signal.TradeType);
+                Log("  -> pas de trade : fenetre news.");
                 return;
             }
 
             if (UseTrendFilter && !IsTrendAligned(signal.TradeType))
+            {
+                Log("  -> pas de trade : contre la tendance {0} (cloture {1} vs EMA {2} {3:0.#####}).", TrendTimeFrame,
+                    _trendBars.ClosePrices.Last(1), TrendEmaPeriod, _trendEma.Result.Last(1));
                 return;
+            }
 
             var atr = _atr.Result[n];
             if (double.IsNaN(atr) || atr <= 0)
@@ -494,14 +538,17 @@ namespace cAlgo.Robots
 
             if (MaxStopLossAtr > 0 && stopLossPips * Symbol.PipSize > atr * MaxStopLossAtr)
             {
-                Print("Sweep {0} ignore : stop de {1:0.0} pips > {2:0.0} x ATR.", signal.TradeType, stopLossPips, MaxStopLossAtr);
+                Log("  -> pas de trade : stop de {0:0.0} pips > {1:0.0} x ATR ({2:0.0} pips).", stopLossPips, MaxStopLossAtr, atr * MaxStopLossAtr / Symbol.PipSize);
                 return;
             }
 
             var takeProfitPips = stopLossPips * RiskRewardRatio;
             var volume = CalculatePositionVolume(stopLossPips);
             if (volume <= 0)
+            {
+                Log("  -> pas de trade : volume calcule nul (voir message ci-dessus).");
                 return;
+            }
 
             var reason = signal.TradeType == TradeType.Sell ? "Sweep swing high" : "Sweep swing low";
             var result = ExecuteMarketOrder(signal.TradeType, SymbolName, volume, Label, stopLossPips, takeProfitPips, reason);
@@ -516,6 +563,12 @@ namespace cAlgo.Robots
                 signal.TradeType, reason, signal.Zone.Level, signal.Zone.Touches, volume,
                 stopLossPips * PipValuePerUnit() * volume / Account.Balance * 100.0,
                 stopLossPips, takeProfitPips, RiskRewardRatio);
+        }
+
+        private void Log(string format, params object[] args)
+        {
+            if (VerboseLogs)
+                Print(format, args);
         }
 
         private bool IsTrendAligned(TradeType tradeType)

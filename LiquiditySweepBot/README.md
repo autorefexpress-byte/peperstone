@@ -39,8 +39,8 @@ Protections reprises d'IctSmcIchimokuBot : sizing au risque (ou lot fixe), plafo
 | Pivot Lookback | 14 | Bougies de chaque côté pour confirmer un swing |
 | Swing Area | WickExtremity | Zone = mèche du pivot, ou bougie entière (`FullRange`) |
 | Retours min dans la zone | 0 | Ne trade que les zones revisitées au moins N fois avant le sweep |
-| Âge max d'une zone (bougies) | 300 | Zones plus anciennes oubliées |
-| Zones suivies par côté | 5 | Nombre de swings hauts/bas gardés en mémoire |
+| Âge max d'une zone (bougies) | 1000 | Zones plus anciennes oubliées (≈ 3,5 jours en 5 min, 10 jours en 15 min) |
+| Zones suivies par côté | 10 | Nombre de swings hauts/bas gardés en mémoire |
 | Filtre de tendance / Timeframe / EMA | true / Hour4 / 50 | Sens autorisé selon la tendance de fond |
 | Buffer SL (x ATR) | 0.2 | Marge au-delà de la mèche du sweep |
 | SL minimum (pips) | 8 | Plancher du stop |
@@ -55,4 +55,5 @@ Protections reprises d'IctSmcIchimokuBot : sizing au risque (ou lot fixe), plafo
 | Fermer en fin de journée | true | 21h UTC (20h le vendredi), pas d'entrée dans la dernière heure |
 | Filtre news | true | Pas d'entrée 15 min avant/après 08:30 New York |
 | Max Spread (pips) | 5 | Sécurité anti-spread |
+| Logs détaillés | true | Chaque franchissement de zone et la raison exacte quand aucun trade n'est pris |
 | Afficher les zones | true | Lignes/zones sur le graphique, flèche sur chaque sweep |
